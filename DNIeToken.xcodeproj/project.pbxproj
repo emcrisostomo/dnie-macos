@@ -1,0 +1,619 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		C00000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000001 /* AppDelegate.swift */; };
+		C00000000000000000000003 /* TokenDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000004 /* TokenDriver.swift */; };
+		C00000000000000000000004 /* Token.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000005 /* Token.swift */; };
+		C00000000000000000000005 /* TokenSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000006 /* TokenSession.swift */; };
+		C00000000000000000000006 /* CryptoTokenKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B00000000000000000000009 /* CryptoTokenKit.framework */; };
+		C00000000000000000000007 /* DNIeTokenExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000B /* DNIeTokenExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		C00000000000000000000008 /* ScaffoldTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000C /* ScaffoldTests.swift */; };
+		C00000000000000000000009 /* DNIeCore in Frameworks */ = {isa = PBXBuildFile; productRef = N00000000000000000000001 /* DNIeCore */; };
+		C0000000000000000000000A /* PlatformItemMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000E /* PlatformItemMapper.swift */; };
+		C0000000000000000000000B /* PlatformItemMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000000E /* PlatformItemMapper.swift */; };
+		C0000000000000000000000D /* CryptoTokenKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B00000000000000000000009 /* CryptoTokenKit.framework */; };
+		C0000000000000000000000E /* DNIeCore in Frameworks */ = {isa = PBXBuildFile; productRef = N00000000000000000000001 /* DNIeCore */; };
+		C0000000000000000000000F /* SmartCardTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000010 /* SmartCardTransport.swift */; };
+		C00000000000000000000010 /* SmartCardTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000010 /* SmartCardTransport.swift */; };
+		C00000000000000000000011 /* SmartCardTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000011 /* SmartCardTransportTests.swift */; };
+		C00000000000000000000012 /* PINOperationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000012 /* PINOperationTests.swift */; };
+		C00000000000000000000013 /* PINAuthOperation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000013 /* PINAuthOperation.swift */; };
+		C00000000000000000000014 /* PINAuthOperation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000013 /* PINAuthOperation.swift */; };
+		C00000000000000000000015 /* PINAuthOperationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000014 /* PINAuthOperationTests.swift */; };
+		C00000000000000000000016 /* Token.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000005 /* Token.swift */; };
+		C00000000000000000000017 /* TokenSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000006 /* TokenSession.swift */; };
+		C00000000000000000000018 /* TokenSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000015 /* TokenSessionTests.swift */; };
+		C00000000000000000000019 /* LifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000016 /* LifecycleTests.swift */; };
+		C00000000000000000000020 /* CommandBoundaryValidationGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000017 /* CommandBoundaryValidationGate.swift */; };
+		C00000000000000000000021 /* CommandBoundaryValidationGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000017 /* CommandBoundaryValidationGate.swift */; };
+		C00000000000000000000022 /* CommandBoundaryValidationGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000018 /* CommandBoundaryValidationGateTests.swift */; };
+		C00000000000000000000023 /* SignatureCorrelationProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000019 /* SignatureCorrelationProbe.swift */; };
+		C00000000000000000000024 /* SignatureCorrelationProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000019 /* SignatureCorrelationProbe.swift */; };
+		C00000000000000000000025 /* SignatureCorrelationProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000001A /* SignatureCorrelationProbeTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		H00000000000000000000002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = G00000000000000000000002;
+			remoteInfo = DNIeTokenExtension;
+		};
+		H00000000000000000000003 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = G00000000000000000000002;
+			remoteInfo = DNIeTokenExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		E00000000000000000000004 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				C00000000000000000000007 /* DNIeTokenExtension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		B00000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		B00000000000000000000002 /* Host Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B00000000000000000000003 /* HostApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HostApp.entitlements; sourceTree = "<group>"; };
+		B00000000000000000000004 /* TokenDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenDriver.swift; sourceTree = "<group>"; };
+		B00000000000000000000005 /* Token.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Token.swift; sourceTree = "<group>"; };
+		B00000000000000000000006 /* TokenSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenSession.swift; sourceTree = "<group>"; };
+		B00000000000000000000007 /* Extension Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B00000000000000000000008 /* TokenExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TokenExtension.entitlements; sourceTree = "<group>"; };
+		B00000000000000000000009 /* CryptoTokenKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CryptoTokenKit.framework; path = System/Library/Frameworks/CryptoTokenKit.framework; sourceTree = SDKROOT; };
+		B0000000000000000000000A /* DNIeTokenHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DNIeTokenHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B0000000000000000000000B /* DNIeTokenExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DNIeTokenExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		B0000000000000000000000C /* ScaffoldTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScaffoldTests.swift; sourceTree = "<group>"; };
+		B0000000000000000000000D /* TokenExtensionTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TokenExtensionTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B0000000000000000000000E /* PlatformItemMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformItemMapper.swift; sourceTree = "<group>"; };
+		B00000000000000000000010 /* SmartCardTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartCardTransport.swift; sourceTree = "<group>"; };
+		B00000000000000000000011 /* SmartCardTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartCardTransportTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000012 /* PINOperationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PINOperationTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000013 /* PINAuthOperation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PINAuthOperation.swift; sourceTree = "<group>"; };
+		B00000000000000000000014 /* PINAuthOperationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PINAuthOperationTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000015 /* TokenSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenSessionTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000016 /* LifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LifecycleTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000017 /* CommandBoundaryValidationGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandBoundaryValidationGate.swift; sourceTree = "<group>"; };
+		B00000000000000000000018 /* CommandBoundaryValidationGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandBoundaryValidationGateTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000019 /* SignatureCorrelationProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignatureCorrelationProbe.swift; sourceTree = "<group>"; };
+		B0000000000000000000001A /* SignatureCorrelationProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignatureCorrelationProbeTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		E00000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F00000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C00000000000000000000006 /* CryptoTokenKit.framework in Frameworks */,
+				C00000000000000000000009 /* DNIeCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		M00000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C0000000000000000000000D /* CryptoTokenKit.framework in Frameworks */,
+				C0000000000000000000000E /* DNIeCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A00000000000000000000002 = {
+			isa = PBXGroup;
+			children = (
+				D00000000000000000000001 /* HostApp */,
+				D00000000000000000000002 /* TokenExtension */,
+				D00000000000000000000004 /* Tests */,
+				D00000000000000000000003 /* Frameworks */,
+				A00000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A00000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B0000000000000000000000A /* DNIeTokenHost.app */,
+				B0000000000000000000000B /* DNIeTokenExtension.appex */,
+				B0000000000000000000000D /* TokenExtensionTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		D00000000000000000000001 /* HostApp */ = {
+			isa = PBXGroup;
+			children = (
+				B00000000000000000000001 /* AppDelegate.swift */,
+				B00000000000000000000002 /* Host Info.plist */,
+				B00000000000000000000003 /* HostApp.entitlements */,
+			);
+			path = HostApp;
+			sourceTree = "<group>";
+		};
+		D00000000000000000000002 /* TokenExtension */ = {
+			isa = PBXGroup;
+			children = (
+				B00000000000000000000004 /* TokenDriver.swift */,
+				B00000000000000000000005 /* Token.swift */,
+				B00000000000000000000006 /* TokenSession.swift */,
+				B0000000000000000000000E /* PlatformItemMapper.swift */,
+				B00000000000000000000010 /* SmartCardTransport.swift */,
+				B00000000000000000000013 /* PINAuthOperation.swift */,
+				B00000000000000000000017 /* CommandBoundaryValidationGate.swift */,
+				B00000000000000000000019 /* SignatureCorrelationProbe.swift */,
+				B00000000000000000000007 /* Extension Info.plist */,
+				B00000000000000000000008 /* TokenExtension.entitlements */,
+			);
+			path = TokenExtension;
+			sourceTree = "<group>";
+		};
+		D00000000000000000000003 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				B00000000000000000000009 /* CryptoTokenKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		D00000000000000000000004 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				B0000000000000000000000C /* ScaffoldTests.swift */,
+				B00000000000000000000011 /* SmartCardTransportTests.swift */,
+				B00000000000000000000012 /* PINOperationTests.swift */,
+				B00000000000000000000014 /* PINAuthOperationTests.swift */,
+				B00000000000000000000015 /* TokenSessionTests.swift */,
+				B00000000000000000000016 /* LifecycleTests.swift */,
+				B00000000000000000000018 /* CommandBoundaryValidationGateTests.swift */,
+				B0000000000000000000001A /* SignatureCorrelationProbeTests.swift */,
+			);
+			path = Tests/TokenExtensionTests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		G00000000000000000000001 /* DNIeTokenHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L00000000000000000000002 /* Build configuration list for PBXNativeTarget "DNIeTokenHost" */;
+			buildPhases = (
+				E00000000000000000000001 /* Sources */,
+				E00000000000000000000002 /* Frameworks */,
+				E00000000000000000000003 /* Resources */,
+				E00000000000000000000004 /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				H00000000000000000000001 /* PBXTargetDependency */,
+			);
+			name = DNIeTokenHost;
+			productName = DNIeTokenHost;
+			productReference = B0000000000000000000000A /* DNIeTokenHost.app */;
+			productType = "com.apple.product-type.application";
+		};
+		G00000000000000000000002 /* DNIeTokenExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L00000000000000000000003 /* Build configuration list for PBXNativeTarget "DNIeTokenExtension" */;
+			buildPhases = (
+				F00000000000000000000001 /* Sources */,
+				F00000000000000000000002 /* Frameworks */,
+				F00000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = DNIeTokenExtension;
+			packageProductDependencies = (
+				N00000000000000000000001 /* DNIeCore */,
+			);
+			productName = DNIeTokenExtension;
+			productReference = B0000000000000000000000B /* DNIeTokenExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		G00000000000000000000003 /* TokenExtensionTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L00000000000000000000004 /* Build configuration list for PBXNativeTarget "TokenExtensionTests" */;
+			buildPhases = (
+				M00000000000000000000001 /* Sources */,
+				M00000000000000000000002 /* Frameworks */,
+				M00000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				H00000000000000000000004 /* PBXTargetDependency */,
+			);
+			name = TokenExtensionTests;
+			packageProductDependencies = (
+				N00000000000000000000001 /* DNIeCore */,
+			);
+			productName = TokenExtensionTests;
+			productReference = B0000000000000000000000D /* TokenExtensionTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A00000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2660;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					G00000000000000000000001 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					G00000000000000000000002 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					G00000000000000000000003 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+				};
+			};
+			buildConfigurationList = L00000000000000000000001 /* Build configuration list for PBXProject "DNIeToken" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A00000000000000000000002;
+			packageReferences = (
+				P00000000000000000000001 /* XCLocalSwiftPackageReference "DNIeCore" */,
+			);
+			productRefGroup = A00000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				G00000000000000000000001 /* DNIeTokenHost */,
+				G00000000000000000000002 /* DNIeTokenExtension */,
+				G00000000000000000000003 /* TokenExtensionTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E00000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F00000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		M00000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		E00000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C00000000000000000000001 /* AppDelegate.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F00000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C00000000000000000000003 /* TokenDriver.swift in Sources */,
+				C00000000000000000000004 /* Token.swift in Sources */,
+				C00000000000000000000005 /* TokenSession.swift in Sources */,
+				C0000000000000000000000A /* PlatformItemMapper.swift in Sources */,
+				C0000000000000000000000F /* SmartCardTransport.swift in Sources */,
+				C00000000000000000000013 /* PINAuthOperation.swift in Sources */,
+				C00000000000000000000020 /* CommandBoundaryValidationGate.swift in Sources */,
+				C00000000000000000000023 /* SignatureCorrelationProbe.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		M00000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C00000000000000000000008 /* ScaffoldTests.swift in Sources */,
+				C0000000000000000000000B /* PlatformItemMapper.swift in Sources */,
+				C00000000000000000000010 /* SmartCardTransport.swift in Sources */,
+				C00000000000000000000011 /* SmartCardTransportTests.swift in Sources */,
+				C00000000000000000000012 /* PINOperationTests.swift in Sources */,
+				C00000000000000000000014 /* PINAuthOperation.swift in Sources */,
+				C00000000000000000000015 /* PINAuthOperationTests.swift in Sources */,
+				C00000000000000000000016 /* Token.swift in Sources */,
+				C00000000000000000000017 /* TokenSession.swift in Sources */,
+				C00000000000000000000018 /* TokenSessionTests.swift in Sources */,
+				C00000000000000000000019 /* LifecycleTests.swift in Sources */,
+				C00000000000000000000021 /* CommandBoundaryValidationGate.swift in Sources */,
+				C00000000000000000000022 /* CommandBoundaryValidationGateTests.swift in Sources */,
+				C00000000000000000000024 /* SignatureCorrelationProbe.swift in Sources */,
+				C00000000000000000000025 /* SignatureCorrelationProbeTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		H00000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = G00000000000000000000002 /* DNIeTokenExtension */;
+			targetProxy = H00000000000000000000002 /* PBXContainerItemProxy */;
+		};
+		H00000000000000000000004 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = G00000000000000000000002 /* DNIeTokenExtension */;
+			targetProxy = H00000000000000000000003 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		I00000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				COMPILER_INDEX_STORE_ENABLE = NO;
+				DEVELOPMENT_LANGUAGE = en;
+				GCC_TREAT_WARNINGS_AS_ERRORS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		I00000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				COMPILER_INDEX_STORE_ENABLE = NO;
+				DEVELOPMENT_LANGUAGE = en;
+				GCC_TREAT_WARNINGS_AS_ERRORS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		J00000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = HostApp/HostApp.entitlements;
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = HostApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.dniemacos.dnietoken;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+			};
+			name = Debug;
+		};
+		J00000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = HostApp/HostApp.entitlements;
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = HostApp/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.dniemacos.dnietoken;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+			};
+			name = Release;
+		};
+		K00000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = TokenExtension/TokenExtension.entitlements;
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TokenExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.dniemacos.dnietoken.tokenextension;
+				PRODUCT_MODULE_NAME = DNIeTokenExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+			};
+			name = Debug;
+		};
+		K00000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = TokenExtension/TokenExtension.entitlements;
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TokenExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.dniemacos.dnietoken.tokenextension;
+				PRODUCT_MODULE_NAME = DNIeTokenExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+			};
+			name = Release;
+		};
+		Q00000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.dniemacos.dnietoken.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		Q00000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.dniemacos.dnietoken.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		L00000000000000000000001 /* Build configuration list for PBXProject "DNIeToken" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				I00000000000000000000001 /* Debug */,
+				I00000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		L00000000000000000000002 /* Build configuration list for PBXNativeTarget "DNIeTokenHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				J00000000000000000000001 /* Debug */,
+				J00000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		L00000000000000000000003 /* Build configuration list for PBXNativeTarget "DNIeTokenExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				K00000000000000000000001 /* Debug */,
+				K00000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		L00000000000000000000004 /* Build configuration list for PBXNativeTarget "TokenExtensionTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				Q00000000000000000000001 /* Debug */,
+				Q00000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		P00000000000000000000001 /* XCLocalSwiftPackageReference "DNIeCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/DNIeCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		N00000000000000000000001 /* DNIeCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = P00000000000000000000001 /* XCLocalSwiftPackageReference "DNIeCore" */;
+			productName = DNIeCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = A00000000000000000000001 /* Project object */;
+}

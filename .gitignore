@@ -1,0 +1,58 @@
+.DS_Store
+DerivedData/
+DerivedData*/
+build/
+Build/
+.build/
+*.xcuserstate
+xcuserdata/
+*.xcarchive/
+*.dSYM/
+*.o
+*.pkg
+__pycache__/
+*.pyc
+
+# Signed validation products and disposable architecture-spike workspaces.
+*.app/
+*.appex/
+Validation/ArchitectureSpikes/
+
+# Raw diagnostics must be reduced to reviewed, redacted Markdown evidence.
+*.crash
+*.ips
+*.log
+*.logarchive/
+*.tracev3
+
+# Signing, provisioning, certificate, keychain, and private-key artifacts.
+*.mobileprovision
+*.provisionprofile
+*.cer
+*.crt
+*.csr
+*.der
+*.pem
+*.p12
+*.pfx
+*.p8
+*.key
+*.keychain
+*.keychain-db
+*.srl
+
+# Retained, nonpersonal M09 loopback credentials; each run uses its own directory.
+/Validation/Spikes/SafariMTLS/Local/m09-loopback.*/
+
+# Disposable AS-01 entitlement exports and command-status files.
+as01-*-entitlements.plist
+as01-*-registration-exit-status
+as01-*-command-status*
+
+# Raw hardware/card research may contain personal or security-sensitive data.
+Validation/private/
+Validation/raw/
+Validation/unredacted/
+
+# ADR-008 local-only credential asset. Generated for authorized local builds; never publish.
+Packages/DNIeCore/Sources/DNIeCore/Evidence/Credentials/Assets/generation2.json

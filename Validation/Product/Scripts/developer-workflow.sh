@@ -1,0 +1,707 @@
+#!/bin/zsh
+set -euo pipefail
+
+script_dir="${0:A:h}"
+default_repository_root="${script_dir:h:h:h}"
+test_mode="${DNIE_WORKFLOW_TEST_MODE:-0}"
+
+if [[ "${test_mode}" == 1 ]]; then
+  repository_root="${DNIE_WORKFLOW_REPOSITORY_ROOT:?test repository root is required}"
+  bin_dir="${DNIE_WORKFLOW_BIN_DIR:?test binary directory is required}"
+  [[ "${repository_root}" == /private/tmp/* && "${bin_dir}" == /private/tmp/* ]]
+else
+  repository_root="${default_repository_root}"
+  bin_dir=""
+  for variable in ${(k)parameters}; do
+    [[ "${variable}" == DNIE_WORKFLOW_* ]] || continue
+    [[ "${variable}" == DNIE_WORKFLOW_TEST_MODE ]] && continue
+    print -u2 "Test-only workflow overrides are not accepted outside offline test mode."
+    exit 64
+  done
+fi
+
+tool() {
+  local name="$1"
+  if [[ -n "${bin_dir}" ]]; then
+    print -r -- "${bin_dir}/${name}"
+  else
+    command -v "${name}"
+  fi
+}
+
+fail() {
+  print -u2 -- "$1"
+  exit "${2:-1}"
+}
+
+require_normal_user() {
+  (( EUID != 0 )) || fail "Do not run build or status through sudo/root; signing, private-fixture staging, DerivedData, and registration inspection belong to the invoking user."
+}
+
+resolve_signing_identity() {
+  local security_command="$(tool security)"
+  local requested="${DNIE_SIGNING_IDENTITY_SHA1:-}"
+  local output=""
+  local hashes=()
+  output="$(${security_command} find-identity -v -p codesigning)" ||
+    fail "Unable to inspect code-signing identities."
+  hashes=("${(@f)$(print -r -- "${output}" | awk '
+    /Apple Development/ {
+      for (i = 1; i <= NF; i++) {
+        value = $i
+        gsub(/[^[:xdigit:]]/, "", value)
+        if (length(value) == 40) { print toupper(value); break }
+      }
+    }
+  ')}")
+  hashes=("${(@)hashes:#}")
+
+  if [[ -n "${requested}" ]]; then
+    [[ "${requested}" =~ '^[[:xdigit:]]{40}$' ]] ||
+      fail "DNIE_SIGNING_IDENTITY_SHA1 must be exactly one 40-hex Apple Development identity hash." 64
+    requested="${requested:u}"
+    (( ${hashes[(I)${requested}]} > 0 )) ||
+      fail "The explicitly selected Apple Development identity is not currently valid."
+    signing_identity="${requested}"
+    return
+  fi
+
+  if (( ${#hashes} == 0 )); then
+    fail "No valid Apple Development code-signing identity was found."
+  fi
+  if (( ${#hashes} != 1 )); then
+    fail "There are multiple valid Apple Development identities; select one with DNIE_SIGNING_IDENTITY_SHA1 without printing it in logs."
+  fi
+  signing_identity="${hashes[1]}"
+}
+
+check_environment() {
+  local uname_command="$(tool uname)"
+  local sw_vers_command="$(tool sw_vers)"
+  local xcodebuild_command="$(tool xcodebuild)"
+  local xcrun_command="$(tool xcrun)"
+  local observed_arch observed_version observed_build observed_xcode observed_xcode_build observed_sdk observed_swift
+  observed_arch="$(${uname_command} -m)"
+  observed_version="$(${sw_vers_command} -productVersion)"
+  observed_build="$(${sw_vers_command} -buildVersion)"
+  observed_xcode="$(${xcodebuild_command} -version 2>/dev/null | sed -n '1p')"
+  observed_xcode_build="$(${xcodebuild_command} -version 2>/dev/null | sed -n '2p')"
+  observed_sdk="$(${xcrun_command} --show-sdk-version 2>/dev/null)"
+  observed_swift="$(${xcrun_command} swift --version 2>&1)"
+
+  if [[ "${observed_arch}" != arm64 || "${observed_version}" != 26.6.2 ||
+        "${observed_build}" != 25G83 || "${observed_xcode}" != 'Xcode 26.6' ||
+        "${observed_xcode_build}" != 'Build version 17F113' || "${observed_sdk}" != 26.5 ||
+        "${observed_swift}" != *'Apple Swift version 6.3.3'* ]]; then
+    print -u2 "The machine does not match the recorded product evidence environment; current runtime/build support remains UNKNOWN, not unsupported."
+    print -u2 "observed_arch=${observed_arch}"
+    print -u2 "observed_macos_version=${observed_version}"
+    print -u2 "observed_macos_build=${observed_build}"
+    print -u2 "observed_xcode=${observed_xcode}"
+    print -u2 "observed_xcode_build=${observed_xcode_build}"
+    print -u2 "observed_sdk=${observed_sdk}"
+    print "environment_evidence_match=unknown"
+    return
+  fi
+  print "environment_evidence_match=pass"
+}
+
+check_fixture_metadata() {
+  local fixture="${repository_root}/Validation/private/SecureChannel/generation2.json"
+  local stat_command="$(tool stat)"
+  local git_command="$(tool git)"
+  [[ -f "${fixture}" && ! -L "${fixture}" ]] ||
+    fail "The authorized local generation-2 fixture is missing or is a symlink."
+  [[ "$(${stat_command} -f '%Lp' "${fixture}")" == 600 ]] ||
+    fail "The authorized local generation-2 fixture must have mode 0600."
+  ${git_command} -C "${repository_root}" check-ignore --quiet "${fixture}" ||
+    fail "The authorized local generation-2 fixture is not ignored by Git."
+  print "credential_fixture_metadata=pass"
+  print "credential_fixture_bytes_read=false"
+}
+
+run_build_preflight() {
+  check_environment
+  check_fixture_metadata
+  resolve_signing_identity
+  print "signing_selection=pass"
+  print "signing_identity_logged=false"
+}
+
+run_check() {
+  check_environment
+  zsh -n "${script_dir}/developer-workflow.sh" "${script_dir}/build-development.sh" \
+    "${script_dir}/prepare-installed-path.sh" "${script_dir}/inspect-registration.sh" \
+    "${default_repository_root}/Validation/Scripts/stage-production-credential-asset.sh" \
+    "${default_repository_root}/Validation/Scripts/test-stage-production-credential-asset.sh"
+  "${default_repository_root}/Validation/Scripts/test-stage-production-credential-asset.sh"
+  print "developer_workflow_syntax=pass"
+  print "credential_fixture_inspected=false"
+  print "signing_keychain_inspected=false"
+  print "card_private_operation=false"
+}
+
+test_override() {
+  local variable="$1"
+  local fallback="$2"
+  if [[ "${test_mode}" == 1 ]]; then
+    print -r -- "${(P)variable:-${fallback}}"
+  else
+    print -r -- "${fallback}"
+  fi
+}
+
+run_build() {
+  require_normal_user
+  local build_script="$(test_override DNIE_WORKFLOW_BUILD_SCRIPT "${script_dir}/build-development.sh")"
+  "${build_script}" --check-build-slot >/dev/null
+  run_build_preflight
+  DNIE_SIGNING_IDENTITY_SHA1="${signing_identity}" "${build_script}"
+}
+
+artifact_cdhash() {
+  local output inspector_script
+  inspector_script="$(test_override DNIE_WORKFLOW_ARTIFACT_INSPECTOR "${script_dir}/inspect-pilot-artifact.sh")"
+  output="$("${inspector_script}" "$1")" || return 1
+  print -r -- "${output}" | sed -n 's/^artifact_cdhash=//p'
+}
+
+registration_snapshot() {
+  local pluginkit_command="$(tool pluginkit)"
+  "${pluginkit_command}" -m -A -D -vvv -i org.dniemacos.dnietoken.tokenextension 2>/dev/null
+}
+
+active_paths_for_identifier() {
+  active_registrations_for_identifier "$1" "$2" | /usr/bin/cut -f 2-
+}
+
+active_registrations_for_identifier() {
+  print -r -- "$1" | awk -v id="$2" '
+    function finish_record() {
+      if (!in_record) return
+      if (target) { if (!usable || path == "" || version == "") invalid=1; else records[++count]=version "\t" path }
+      in_record=0; target=0; usable=0; path=""; version=""
+    }
+    function start_header(line, raw, status, header_id) {
+      raw=line; status=substr(raw,1,1)
+      if (status ~ /[+!\-=\?]/) raw=substr(raw,2); else status=""
+      sub(/^[[:space:]]*/, "", raw)
+      if (raw !~ /^[^[:space:]]+[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/) return 0
+      header_id=raw; sub(/[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/, "", header_id)
+      finish_record(); version=raw; sub(/^.*\(/, "", version); sub(/\)$/, "", version)
+      in_record=1; target=(header_id==id); usable=(status=="" || status=="+" || status=="!"); path=""; return 1
+    }
+    function shaped(line, raw, status) {
+      raw=line; status=substr(raw,1,1); if (status ~ /[+!\-=\?]/) raw=substr(raw,2)
+      sub(/^[[:space:]]*/, "", raw); return raw ~ /^[^[:space:]]+[[:space:]]*\([^)]*\)$/
+    }
+    function malformed_target(line, raw, status, boundary) {
+      raw=line; status=substr(raw,1,1); if (status ~ /[+!\-=\?]/) raw=substr(raw,2)
+      sub(/^[[:space:]]*/, "", raw); boundary=substr(raw,length(id)+1,1)
+      return index(raw,id)==1 && (boundary=="" || boundary ~ /[[:space:]\(]/)
+    }
+    { if (start_header($0)) next
+      if (in_record && target && shaped($0)) { invalid=1; finish_record(); next }
+      if (malformed_target($0)) { invalid=1; next }
+      if (in_record && target && $0 ~ /^[[:space:]]*Path = /) {
+        if (path!="") invalid=1; else { path=$0; sub(/^[[:space:]]*Path = /,"",path) }
+      }
+    }
+    END { finish_record(); if (invalid) exit 1; for (i=1;i<=count;i++) print records[i] }'
+}
+
+registration_is_exact_path_version() {
+  local expected_path="$1" expected_version="$2" snapshot="$3" records
+  [[ "${expected_version}" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] || return 1
+  records="$(active_registrations_for_identifier "${snapshot}" org.dniemacos.dnietoken.tokenextension)" || return 1
+  [[ "${records}" == "${expected_version}"$'\t'"${expected_path}" &&
+     "$(print -r -- "${records}" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 ]]
+}
+
+registration_is_exact_path() {
+  local expected="$1" snapshot="$2" paths
+  paths="$(active_paths_for_identifier "${snapshot}" org.dniemacos.dnietoken.tokenextension)" || return 1
+  [[ "${paths}" == "${expected}" && "$(print -r -- "${paths}" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 ]]
+}
+
+require_registration_path() {
+  registration_is_exact_path "$1" "$2" ||
+    fail "The production provider registration is stale, duplicated, or points outside the exact accepted path."
+}
+
+registration_is_absent() {
+  local snapshot="$1" paths
+  paths="$(active_paths_for_identifier "${snapshot}" org.dniemacos.dnietoken.tokenextension)" || return 1
+  [[ -z "${paths}" ]]
+}
+
+registration_classification() {
+  local expected="$1" snapshot="$2"
+  if registration_is_exact_path "${expected}" "${snapshot}"; then print exact-installed
+  elif registration_is_absent "${snapshot}"; then print absent
+  else return 1
+  fi
+}
+
+require_no_registration() {
+  registration_is_absent "$1" || fail "A stale or competing production-provider registration remains visible."
+}
+
+require_app_inactive() {
+  local app="$1" pgrep_command="$(tool pgrep)" pattern observed_status
+  for pattern in \
+    "^${app}/Contents/MacOS/DNIeTokenHost([[:space:]]|$)" \
+    "^${app}/Contents/PlugIns/DNIeTokenExtension.appex/Contents/MacOS/DNIeTokenExtension([[:space:]]|$)"; do
+    if "${pgrep_command}" -f "${pattern}" >/dev/null 2>&1; then
+      fail "The exact host or provider is active; lifecycle mutation is forbidden."
+    else
+      observed_status=$?
+      (( observed_status == 1 )) || fail "Unable to establish that the exact host and provider are inactive; lifecycle mutation is forbidden."
+    fi
+  done
+}
+
+run_root_lifecycle() {
+  local root_helper="$(test_override DNIE_WORKFLOW_ROOT_HELPER "${script_dir}/pilot-lifecycle-root.sh")"
+  if [[ "${test_mode}" == 1 && "${DNIE_WORKFLOW_TEST_EXERCISE_AUTHORIZATION_TRANSPORT:-0}" != 1 ]]; then
+    if [[ "${DNIE_WORKFLOW_TEST_REFUSE_ROOT_COMMAND:-}" == "${1:-}" ]]; then return 77; fi
+    "${root_helper}" "$@"
+  else
+    local inspector_source="${script_dir}/inspect-pilot-artifact.sh" helper_digest inspector_digest invoking_uid transport
+    local bootstrap_payload privileged_command apple_command argument
+    local -a privileged_arguments
+    helper_digest="$(/usr/bin/shasum -a 256 "${root_helper}" | /usr/bin/cut -d ' ' -f 1)"
+    inspector_digest="$(/usr/bin/shasum -a 256 "${inspector_source}" | /usr/bin/cut -d ' ' -f 1)"
+    invoking_uid="$(/usr/bin/id -u)"
+    [[ "${invoking_uid}" == <-> && "${invoking_uid}" -ne 0 ]] || fail "The lifecycle caller must be an identified normal user."
+    # BOOTSTRAP_PAYLOAD_BEGIN: extracted by the isolated executable bootstrap test.
+    bootstrap_payload='
+      set -euo pipefail; umask 077
+      helper_source="$1"; inspector_source="$2"; helper_digest="$3"; inspector_digest="$4"; caller_uid="$5"; shift 5
+      bootstrap_test_root="${DNIE_BOOTSTRAP_TEST_ROOT:-}"; bootstrap_test_only="${DNIE_BOOTSTRAP_TEST_ONLY:-0}"
+      if (( EUID == 0 )); then
+        [[ -z "${bootstrap_test_root}" && "${bootstrap_test_only}" == 0 && "${caller_uid}" == <-> && "${caller_uid}" -ne 0 ]] || exit 70
+        [[ -z "${SUDO_UID:-}" || "${SUDO_UID}" == "${caller_uid}" ]] || exit 70
+        source_uid="${caller_uid}"; target_uid=0; base="/Library/Application Support/org.dniemacos.dnietoken"
+      else
+        [[ "${bootstrap_test_only}" == 1 && "${bootstrap_test_root}" == /private/tmp/dnie-pilot-bootstrap-test.* &&
+           "${bootstrap_test_root:A}" == "${bootstrap_test_root}" && -d "${bootstrap_test_root}" && ! -L "${bootstrap_test_root}" &&
+           "$(/usr/bin/stat -f %u "${bootstrap_test_root}")" == "${EUID}" ]] || exit 70
+        source_uid="${EUID}"; target_uid="${EUID}"; base="${bootstrap_test_root}/Library/Application Support/org.dniemacos.dnietoken"
+      fi
+      for source expected in "${helper_source}" "${helper_digest}" "${inspector_source}" "${inspector_digest}"; do
+        [[ "${source:A}" == "${source}" && -f "${source}" && ! -L "${source}" &&
+           "$(/usr/bin/stat -f %u "${source}")" == "${source_uid}" && "$(/usr/bin/stat -f %l "${source}")" == 1 ]] || exit 71
+        mode="$(/usr/bin/stat -f %Lp "${source}")"; (( (8#${mode} & 8#022) == 0 )) || exit 72
+        [[ "$(/usr/bin/shasum -a 256 "${source}" | /usr/bin/cut -d " " -f 1)" == "${expected}" ]] || exit 73
+      done
+      trusted="${base}/pilot-lifecycle/trusted-tools"
+      if (( EUID == 0 )); then
+        [[ -d /Library && ! -L /Library && "$(/usr/bin/stat -f %u /Library)" == 0 &&
+           $(( 8#$(/usr/bin/stat -f %Lp /Library) & 8#022 )) == 0 &&
+           -d "/Library/Application Support" && ! -L "/Library/Application Support" && "$(/usr/bin/stat -f %u "/Library/Application Support")" == 0 &&
+           $(( 8#$(/usr/bin/stat -f %Lp "/Library/Application Support") & 8#022 )) == 0 ]] || exit 74
+      else
+        for test_directory in "${bootstrap_test_root}/Library" "${bootstrap_test_root}/Library/Application Support"; do
+          [[ ! -e "${test_directory}" || ( -d "${test_directory}" && ! -L "${test_directory}" &&
+             "${test_directory:A}" == "${test_directory}" && "$(/usr/bin/stat -f %u "${test_directory}")" == "${EUID}" &&
+             $(( 8#$(/usr/bin/stat -f %Lp "${test_directory}") & 8#022 )) == 0 ) ]] || exit 74
+          if [[ ! -d "${test_directory}" ]]; then /bin/mkdir "${test_directory}"; /bin/chmod 700 "${test_directory}"; fi
+        done
+      fi
+      lifecycle="${base}/pilot-lifecycle"
+      for directory in "${base}" "${lifecycle}" "${trusted}"; do
+        [[ ! -e "${directory}" || ( -d "${directory}" && ! -L "${directory}" && "$(/usr/bin/stat -f %u "${directory}")" == "${target_uid}" && "$(/usr/bin/stat -f %Lp "${directory}")" == 700 ) ]] || exit 75
+        if [[ ! -d "${directory}" ]]; then /bin/mkdir "${directory}"; (( EUID != 0 )) || /usr/sbin/chown root:wheel "${directory}"; /bin/chmod 700 "${directory}"; fi
+      done
+      for source expected target in "${helper_source}" "${helper_digest}" "${trusted}/pilot-lifecycle-root.sh" "${inspector_source}" "${inspector_digest}" "${trusted}/inspect-pilot-artifact.sh"; do
+        temporary="${target}.new.$$"; /bin/cp -p "${source}" "${temporary}"; (( EUID != 0 )) || /usr/sbin/chown root:wheel "${temporary}"; /bin/chmod 700 "${temporary}"
+        [[ "$(/usr/bin/shasum -a 256 "${temporary}" | /usr/bin/cut -d " " -f 1)" == "${expected}" ]] || exit 76
+        /bin/mv -f "${temporary}" "${target}"
+      done
+      if (( EUID != 0 )); then print "bootstrap_staging_test=pass"; exit 0; fi
+      exec /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin "${trusted}/pilot-lifecycle-root.sh" "$@"
+    '
+    # BOOTSTRAP_PAYLOAD_END
+    privileged_arguments=(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/zsh -f -c "${bootstrap_payload}" -- "${root_helper}" "${inspector_source}" \
+      "${helper_digest}" "${inspector_digest}" "${invoking_uid}" "$@")
+    if [[ "${test_mode}" == 1 ]]; then
+      transport="${DNIE_WORKFLOW_TEST_AUTHORIZATION_TRANSPORT:-native-gui}"
+    elif [[ -t 0 && -t 1 ]]; then
+      transport=sudo
+    else
+      transport=native-gui
+    fi
+    case "${transport}" in
+      sudo)
+        if [[ "${test_mode}" == 1 ]]; then "$(tool sudo)" "${privileged_arguments[@]}"
+        else /usr/bin/sudo "${privileged_arguments[@]}"; fi
+        ;;
+      native-gui)
+        if [[ "${test_mode}" != 1 ]]; then
+          local console_uid console_user
+          console_uid="$(/usr/bin/stat -f %u /dev/console)"; console_user="$(/usr/bin/stat -f %Su /dev/console)"
+          [[ "${console_uid}" == "${invoking_uid}" && "${console_user}" != root && "${console_user}" != loginwindow ]] &&
+            /bin/launchctl print "gui/${console_uid}" >/dev/null ||
+            fail "Native administrator authorization requires the active nonroot console GUI user."
+        fi
+        privileged_command=""
+        for argument in "${privileged_arguments[@]}"; do privileged_command+="${(q)argument} "; done
+        apple_command="${privileged_command//\\/\\\\}"; apple_command="${apple_command//\"/\\\"}"
+        if [[ "${test_mode}" == 1 ]]; then
+          "$(tool osascript)" -l AppleScript -e "do shell script \"${apple_command}\" with administrator privileges without altering line endings"
+        else
+          /usr/bin/osascript -l AppleScript -e "do shell script \"${apple_command}\" with administrator privileges without altering line endings"
+        fi
+        ;;
+      *) fail "The lifecycle authorization transport is invalid." 64 ;;
+    esac
+  fi
+}
+
+wait_for_registration_path() {
+  local expected="$1" snapshot
+  for _ in {1..20}; do
+    snapshot="$(registration_snapshot)" || return 1
+    if registration_is_exact_path "${expected}" "${snapshot}"; then return 0; fi
+    "$(tool sleep)" 0.25
+  done
+  return 1
+}
+
+wait_for_registration_absence() {
+  local snapshot
+  for _ in {1..20}; do
+    snapshot="$(registration_snapshot)" || return 1
+    if registration_is_absent "${snapshot}"; then return 0; fi
+    "$(tool sleep)" 0.25
+  done
+  return 1
+}
+
+restore_development_source_registration() {
+  local expected="${1:l}"
+  local source_app destination_app source_extension observed snapshot
+  [[ "${expected}" =~ '^[[:xdigit:]]{40}$' ]] ||
+    fail "Source registration restoration requires one exact artifact identity." 64
+  source_app="$(test_override DNIE_WORKFLOW_SOURCE_APP "${repository_root}/DerivedData/T067/Build/Products/Release/DNIeTokenHost.app")"
+  destination_app="$(test_override DNIE_WORKFLOW_DESTINATION_APP /Applications/DNIeTokenHost.app)"
+  source_extension="${source_app}/Contents/PlugIns/DNIeTokenExtension.appex"
+
+  observed="$(artifact_cdhash "${source_app}")" ||
+    fail "The retained development source failed exact restoration inspection."
+  [[ "${observed:l}" == "${expected}" ]] ||
+    fail "The retained development source identity differs from the authorized identity."
+  [[ ! -e "${destination_app}" && ! -L "${destination_app}" ]] ||
+    fail "Source registration restoration requires the installed production path to remain absent."
+  require_app_inactive "${source_app}"
+  require_app_inactive "${destination_app}"
+  snapshot="$(registration_snapshot)" ||
+    fail "Unable to inspect registration before source restoration."
+  require_no_registration "${snapshot}"
+
+  # Recheck every mutable boundary immediately before the documented development-only add.
+  [[ "$(artifact_cdhash "${source_app}")" == "${expected}" ]] ||
+    fail "The retained development source changed before source restoration."
+  [[ ! -e "${destination_app}" && ! -L "${destination_app}" ]] ||
+    fail "The installed production path appeared before source restoration."
+  require_app_inactive "${source_app}"
+  require_app_inactive "${destination_app}"
+  snapshot="$(registration_snapshot)" ||
+    fail "Unable to recheck registration immediately before source restoration."
+  require_no_registration "${snapshot}"
+
+  "$(tool pluginkit)" -a "${source_extension}" >/dev/null 2>&1 ||
+    fail "The exact development source registration could not be added."
+  wait_for_registration_path "${source_extension}" ||
+    fail "The development add did not establish one exact source registration."
+
+  [[ "$(artifact_cdhash "${source_app}")" == "${expected}" ]] ||
+    fail "The retained development source changed after source restoration."
+  [[ ! -e "${destination_app}" && ! -L "${destination_app}" ]] ||
+    fail "The installed production path appeared during source restoration."
+  require_app_inactive "${source_app}"
+  require_app_inactive "${destination_app}"
+  snapshot="$(registration_snapshot)" ||
+    fail "Unable to inspect the final source registration state."
+  require_registration_path "${source_extension}" "${snapshot}"
+}
+
+run_finish_source_restoration() {
+  require_normal_user
+  restore_development_source_registration "$1"
+  print 'development_source_registration_restoration=pass'
+  print 'installed_registration=absent'
+  print 'source_registration=exact-singleton'
+}
+
+run_install() {
+  require_normal_user
+  local source_app destination_app source_extension snapshot cdhash token source_isolated=0 root_pending=0
+  source_app="$(test_override DNIE_WORKFLOW_SOURCE_APP "${repository_root}/DerivedData/T067/Build/Products/Release/DNIeTokenHost.app")"
+  destination_app="$(test_override DNIE_WORKFLOW_DESTINATION_APP /Applications/DNIeTokenHost.app)"
+  source_extension="${source_app}/Contents/PlugIns/DNIeTokenExtension.appex"
+  cdhash="$(artifact_cdhash "${source_app}")" || fail "The development product failed the exact pilot artifact preflight."
+  [[ "${cdhash}" =~ '^[[:xdigit:]]{40}$' ]] || fail "The artifact preflight returned no valid signed identity."
+  require_app_inactive "${source_app}"
+  snapshot="$(registration_snapshot)" || fail "Unable to inspect the pre-install registration state."
+  if [[ "${snapshot}" == *org.dniemacos.dnietoken.tokenextension* ]]; then
+    require_registration_path "${source_extension}" "${snapshot}"
+  else
+    require_no_registration "${snapshot}"
+  fi
+  token="install.$(/bin/date +%Y%m%d%H%M%S).$$.${RANDOM}"
+  run_root_lifecycle authorize "${token}" >/dev/null ||
+    fail "Administrator authorization was not granted; the source registration was not changed."
+  if [[ "${snapshot}" == *org.dniemacos.dnietoken.tokenextension* ]]; then
+    "$(tool pluginkit)" -r "${source_extension}"
+    source_isolated=1
+    local isolated_snapshot=""
+    if ! isolated_snapshot="$(registration_snapshot)" || ! require_no_registration "${isolated_snapshot}"; then
+      fail "The exact build-tree registration isolation result is uncertain; no source restoration was attempted."
+    fi
+  fi
+  restore_source_registration() {
+    (( source_isolated )) || return 0
+    restore_development_source_registration "${cdhash}"
+  }
+  rollback_install() {
+    if (( root_pending )); then
+      run_root_lifecycle probe-rollback-install "${token}" "${cdhash}" >/dev/null || return 1
+      "$(tool pluginkit)" -r "${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex" >/dev/null 2>&1 || return 1
+      local rollback_snapshot=""
+      rollback_snapshot="$(registration_snapshot)" && require_no_registration "${rollback_snapshot}" || return 1
+      run_root_lifecycle rollback-install "${token}" "${cdhash}" >/dev/null || return 1
+      root_pending=0
+    fi
+    restore_source_registration || true
+  }
+  trap 'rollback_install; exit 130' INT TERM HUP
+  if ! run_root_lifecycle install "${token}" "${source_app}" "${cdhash}"; then
+    run_root_lifecycle rollback-install "${token}" "${cdhash}" >/dev/null 2>&1 || true
+    restore_source_registration || true
+    return 1
+  fi
+  root_pending=1
+  run_root_lifecycle register-securityagent "${token}" "${cdhash}" >/dev/null ||
+    fail "The documented _securityagent registration was not authorized or did not complete; retained pending state requires reviewed recovery."
+  if ! wait_for_registration_path "${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex"; then
+    rollback_install || fail "Installed-path registration failed and rollback authorization was unavailable; retained pending state requires reviewed recovery."
+    fail "The exact installed row was not observable immediately after the _securityagent command; the app was withdrawn into retained recovery and any isolated source registration was restored."
+  fi
+  if ! run_root_lifecycle commit-install "${token}" "${cdhash}"; then
+    rollback_install || fail "Install commit failed and automatic rollback was not provable; retained pending state requires review."
+    fail "Install commit failed; the exact app was rolled back."
+  fi
+  root_pending=0
+  trap - INT TERM HUP
+  print "pilot_install=pass"
+  print "source_registration_isolated=${source_isolated}"
+}
+
+run_recover_pending_install() {
+  require_normal_user
+  local token="$1" expected="${2:l}"
+  local source_app destination_app source_extension installed_extension snapshot observed rollback_output expected_archive
+  local initial_registration current_registration probe_output expected_probe installed_user_inspectable=1
+  [[ "${token}" =~ '^install\.[0-9]{14}\.[0-9]+\.[0-9]+$' && "${expected}" =~ '^[[:xdigit:]]{40}$' ]] ||
+    fail "Pending-install recovery requires one exact install token and artifact identity." 64
+  source_app="$(test_override DNIE_WORKFLOW_SOURCE_APP "${repository_root}/DerivedData/T067/Build/Products/Release/DNIeTokenHost.app")"
+  destination_app="$(test_override DNIE_WORKFLOW_DESTINATION_APP /Applications/DNIeTokenHost.app)"
+  source_extension="${source_app}/Contents/PlugIns/DNIeTokenExtension.appex"
+  installed_extension="${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex"
+  observed="$(artifact_cdhash "${source_app}")" || fail "The retained source artifact failed exact recovery inspection."
+  [[ "${observed:l}" == "${expected}" ]] || fail "The retained source artifact identity differs from the authorized recovery identity."
+  if observed="$(artifact_cdhash "${destination_app}")"; then
+    [[ "${observed:l}" == "${expected}" ]] || fail "The pending installed artifact identity differs from the authorized recovery identity."
+  else
+    installed_user_inspectable=0
+  fi
+  require_app_inactive "${source_app}"
+  require_app_inactive "${destination_app}"
+  snapshot="$(registration_snapshot)" || fail "Unable to inspect the pending recovery registration state."
+  initial_registration="$(registration_classification "${installed_extension}" "${snapshot}")" ||
+    fail "Pending recovery requires either zero provider rows or one exact installed row."
+
+  probe_output="$(run_root_lifecycle probe-pending-install "${token}" "${expected}")" ||
+    fail "The root-owned state is not an exact uncommitted pending install; nothing was unregistered."
+  expected_probe=$'pending_install_recoverable=true\n'"pending_install_token=${token}"$'\n'"pending_install_cdhash=${expected}"
+  [[ "${probe_output}" == "${expected_probe}" ]] ||
+    fail "The privileged pending probe did not return the exact authorized token and artifact identity."
+
+  # Recheck every normal-user boundary after authorization and immediately before withdrawal.
+  [[ "$(artifact_cdhash "${source_app}")" == "${expected}" ]] ||
+    fail "The source artifact changed after the pending-install probe; nothing was unregistered."
+  if (( installed_user_inspectable )); then
+    [[ "$(artifact_cdhash "${destination_app}")" == "${expected}" ]] ||
+      fail "The installed artifact changed after the pending-install probe; nothing was unregistered."
+  fi
+  require_app_inactive "${source_app}"
+  require_app_inactive "${destination_app}"
+  snapshot="$(registration_snapshot)" || fail "Unable to recheck registration after the pending-install probe."
+  current_registration="$(registration_classification "${installed_extension}" "${snapshot}")" ||
+    fail "The provider registration topology became ambiguous after the pending-install probe."
+  [[ "${current_registration}" == "${initial_registration}" ]] ||
+    fail "The provider registration classification changed after the pending-install probe."
+
+  if [[ "${initial_registration}" == exact-installed ]]; then
+    "$(tool pluginkit)" -r "${installed_extension}" >/dev/null 2>&1 ||
+      fail "The exact installed registration could not be withdrawn; root state and app remain pending."
+    wait_for_registration_absence ||
+      fail "Installed registration withdrawal could not be proven; root state and app remain pending."
+  fi
+  require_app_inactive "${source_app}"
+  require_app_inactive "${destination_app}"
+  snapshot="$(registration_snapshot)" || fail "Unable to recheck registration immediately before pending rollback."
+  require_no_registration "${snapshot}"
+
+  rollback_output="$(run_root_lifecycle rollback-pending-install "${token}" "${expected}")" ||
+    fail "Pending-install rollback was not authorized or failed; the exact app remains attributable and registration is absent."
+  if [[ "${test_mode}" == 1 ]]; then
+    expected_archive="${DNIE_LIFECYCLE_TEST_ROOT}/Library/Application Support/org.dniemacos.dnietoken/pilot-lifecycle/transactions/${token}/DNIeTokenHost.app.failed-install"
+  else
+    expected_archive="/Library/Application Support/org.dniemacos.dnietoken/pilot-lifecycle/transactions/${token}/DNIeTokenHost.app.failed-install"
+  fi
+  [[ "${rollback_output}" == "retained_recovery=${expected_archive}" && ! -e "${destination_app}" && ! -L "${destination_app}" ]] ||
+    fail "The guarded rollback did not report the exact retained archive and absent destination."
+
+  [[ "$(artifact_cdhash "${source_app}")" == "${expected}" ]] ||
+    fail "The app was retained in the exact recovery archive, but the source artifact changed before restoration."
+  require_app_inactive "${source_app}"
+  snapshot="$(registration_snapshot)" || fail "Unable to confirm registration absence before source restoration."
+  require_no_registration "${snapshot}"
+  restore_development_source_registration "${expected}"
+  snapshot="$(registration_snapshot)" || fail "Unable to inspect the final recovery registration state."
+  require_registration_path "${source_extension}" "${snapshot}"
+  [[ ! -e "${destination_app}" && ! -L "${destination_app}" &&
+     "$(artifact_cdhash "${source_app}")" == "${expected}" ]] ||
+    fail "The final pending-install recovery topology changed unexpectedly."
+  print 'pending_install_recovery=pass'
+  print "retained_recovery=${expected_archive}"
+  print 'installed_registration=absent'
+  print "initial_registration=${initial_registration}"
+  print 'source_registration=exact-singleton'
+}
+
+run_uninstall() {
+  require_normal_user
+  local destination_app snapshot cdhash token root_pending=0
+  destination_app="$(test_override DNIE_WORKFLOW_DESTINATION_APP /Applications/DNIeTokenHost.app)"
+  snapshot="$(registration_snapshot)" || fail "Unable to inspect the pre-uninstall registration state."
+  if [[ ! -e "${destination_app}" && ! -L "${destination_app}" ]]; then
+    require_no_registration "${snapshot}"
+    token="absent.$(/bin/date +%Y%m%d%H%M%S).$$.${RANDOM}"
+    run_root_lifecycle probe-absent "${token}"
+    print "pilot_uninstall=already-absent"
+    return
+  fi
+  [[ -d "${destination_app}" && ! -L "${destination_app}" ]] || fail "The install destination is not an exact application directory."
+  cdhash="$(artifact_cdhash "${destination_app}")" || fail "The installed app failed exact product verification."
+  require_registration_path "${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex" "${snapshot}"
+  require_app_inactive "${destination_app}"
+  token="uninstall.$(/bin/date +%Y%m%d%H%M%S).$$.${RANDOM}"
+  rollback_uninstall() {
+    if (( root_pending )); then
+      run_root_lifecycle probe-rollback-uninstall "${token}" "${cdhash}" >/dev/null || return 1
+      run_root_lifecycle rollback-uninstall "${token}" "${cdhash}" >/dev/null || return 1
+      root_pending=0
+      "$(tool open)" -g "${destination_app}" >/dev/null 2>&1 || return 1
+      wait_for_registration_path "${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex" || return 1
+    fi
+  }
+  trap 'rollback_uninstall; exit 130' INT TERM HUP
+  if ! run_root_lifecycle uninstall "${token}" "${cdhash}"; then
+    run_root_lifecycle rollback-uninstall "${token}" "${cdhash}" >/dev/null 2>&1 || true
+    return 1
+  fi
+  root_pending=1
+  if ! wait_for_registration_absence; then
+    rollback_uninstall
+    fail "Provider registration did not disappear; the exact owned app was restored."
+  fi
+  if ! run_root_lifecycle commit-uninstall "${token}" "${cdhash}"; then
+    rollback_uninstall || fail "Uninstall commit failed and exact restoration was not provable; retained pending state requires review."
+    fail "Uninstall commit failed; the exact app and registration were restored."
+  fi
+  root_pending=0
+  trap - INT TERM HUP
+  print "pilot_uninstall=pass"
+}
+
+run_status() {
+  require_normal_user
+  local destination_app="$(test_override DNIE_WORKFLOW_DESTINATION_APP /Applications/DNIeTokenHost.app)"
+  local inspect_script="$(test_override DNIE_WORKFLOW_INSPECT_SCRIPT "${script_dir}/inspect-registration.sh")"
+  local pluginkit_command="$(tool pluginkit)"
+  if [[ -L "${destination_app}" ]]; then
+    fail "The install destination is a symlink; status refuses to follow it."
+  elif [[ -d "${destination_app}" ]]; then
+    "${inspect_script}"
+    print "installed_app=present"
+  elif [[ -e "${destination_app}" ]]; then
+    fail "The install destination exists but is not an application directory."
+  else
+    local registration=""
+    if ! registration="$(${pluginkit_command} -m -A -D -vvv -i org.dniemacos.dnietoken.tokenextension 2>/dev/null)"; then
+      fail "Unable to inspect CryptoTokenKit registration state."
+    fi
+    if [[ "${registration}" == *org.dniemacos.dnietoken.tokenextension* ]]; then
+      fail "The app is absent but a matching registration remains visible."
+    fi
+    print "installed_app=absent"
+    print "installed_provider_visibility=absent"
+  fi
+  print "status_private_operation=false"
+}
+
+print_help() {
+  print 'DNIe local-beta developer workflow (Xcode remains the build system)'
+  print ''
+  print '  help      Show this non-mutating help (the default target)'
+  print '  check     Run non-mutating syntax/offline safety checks; report evidence mismatch as UNKNOWN'
+  print '  build     Build and inspect the private Apple Development beta'
+  print '  install   Verify and publish a fresh exact-owned local pilot app'
+  print '  status    Inspect installed-path and registration state without card/private operations'
+  print '  test      Run offline dispatch and safety fixtures'
+  print ''
+  print 'Set DNIE_SIGNING_IDENTITY_SHA1 to one valid Apple Development SHA-1 when auto-selection is ambiguous.'
+  print '  uninstall Withdraw only the exact-owned pilot app into retained recovery'
+  print '  finish-source-restoration CDHASH  Restore only the exact development row after an independently audited consumed recovery'
+  print 'upgrade, disable, enable, and clean remain intentionally unsupported.'
+}
+
+command_name="${1:-help}"
+if [[ "${command_name}" == recover-pending-install ]]; then
+  [[ "$#" == 3 ]] || fail "usage: ${0:t} recover-pending-install INSTALL_TOKEN CDHASH" 64
+elif [[ "${command_name}" == finish-source-restoration ]]; then
+  [[ "$#" == 2 ]] || fail "usage: ${0:t} finish-source-restoration CDHASH" 64
+elif [[ "${command_name}" == test-registration-version && "${test_mode}" == 1 ]]; then
+  [[ "$#" == 3 ]] || fail "unknown developer workflow command: ${command_name}" 64
+else
+  [[ "$#" -le 1 ]] || fail "usage: ${0:t} [help|check|build|install|status|upgrade|uninstall|disable|enable|clean]" 64
+fi
+case "${command_name}" in
+  help) print_help ;;
+  check) run_check ;;
+  build) run_build ;;
+  install) run_install ;;
+  status) run_status ;;
+  uninstall) run_uninstall ;;
+  recover-pending-install) run_recover_pending_install "$2" "$3" ;;
+  finish-source-restoration) run_finish_source_restoration "$2" ;;
+  test-authorization)
+    [[ "${test_mode}" == 1 ]] || fail "unknown developer workflow command: ${command_name}" 64
+    run_root_lifecycle authorize "${DNIE_WORKFLOW_TEST_AUTHORIZATION_TOKEN:-authorization.test}"
+    ;;
+  test-registration-version)
+    [[ "${test_mode}" == 1 && "$#" == 3 ]] || fail "unknown developer workflow command: ${command_name}" 64
+    test_snapshot="$(registration_snapshot)" || fail "Unable to inspect the test registration state."
+    registration_is_exact_path_version "$2" "$3" "${test_snapshot}" ||
+      fail "The registration is not one exact path/version row."
+    print 'registration_path_version=pass'
+    ;;
+  upgrade|disable|enable|clean)
+    fail "${command_name} is not accepted: the generic lifecycle procedure has not passed T030/U-12. Use no evidence-specific cleanup helper as a product command." 2
+    ;;
+  *) fail "unknown developer workflow command: ${command_name}" 64 ;;
+esac
