@@ -3,17 +3,19 @@ SHELL := /bin/zsh
 .NOTPARALLEL:
 
 WORKFLOW := Validation/Product/Scripts/developer-workflow.sh
-OPERATIONAL_GOALS := check build install status test upgrade uninstall disable enable clean
+RELEASE_GOALS := release-check release-unsigned release-repeatability release release-verify release-test
+OPERATIONAL_GOALS := check build install status test upgrade uninstall disable enable clean $(RELEASE_GOALS)
 REQUESTED_OPERATIONS := $(filter $(OPERATIONAL_GOALS),$(MAKECMDGOALS))
 
 ifneq ($(word 2,$(REQUESTED_OPERATIONS)),)
-$(error Request exactly one operational target per make invocation; build/install and lifecycle operations must not be combined or raced)
+$(error Request exactly one operational target per make invocation; development, lifecycle and release operations must not be combined)
 endif
 
-.PHONY: help check build install status test upgrade uninstall disable enable clean
+.PHONY: help check build install status test upgrade uninstall disable enable clean release-help $(RELEASE_GOALS)
 
 help:
 	@$(WORKFLOW) help
+	@/usr/bin/python3 -B Release/release.py help
 
 check:
 	@$(WORKFLOW) check
@@ -43,3 +45,15 @@ test:
 
 upgrade uninstall disable enable clean:
 	@$(WORKFLOW) $@
+
+release-help:
+	@/usr/bin/python3 -B Release/release.py help
+
+release-check release-unsigned release-repeatability release-verify:
+	@/usr/bin/python3 -B Release/release.py $(@:release-%=%)
+
+release:
+	@/usr/bin/python3 -B Release/release.py release
+
+release-test:
+	@/usr/bin/python3 -B -m unittest discover -s Release -p test_release.py -v

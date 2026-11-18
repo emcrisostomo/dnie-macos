@@ -14,7 +14,7 @@ The app icon has been omitted because its publication rights have not been estab
 - A valid Apple Development signing identity for local builds. Never publish its hash or private key.
 - A generation-2 terminal credential fixture that you have independently obtained and are authorized to use locally. This repository provides no credential bytes, download, or extraction procedure. The fixture must match the metadata and source digest checked by [`stage-production-credential-asset.sh`](Validation/Scripts/stage-production-credential-asset.sh). Place it at `Validation/private/SecureChannel/generation2.json`, as a regular, non-symlink file owned by your user with mode `0600`. The build fails closed if it is absent or fails the guard. Keep this fixture and all built apps private.
 
-The fixture is needed only for `make build`. `make check` and `make test` run offline without it.
+The local development build (`make build`) needs the fixture. Offline checks, tests and unsigned release diagnostics can run without it.
 
 ## Manual workflow
 
@@ -43,3 +43,21 @@ For card use, select the DNIe Authentication identity from the native macOS cert
 ## Licensing and provenance
 
 Original code and documentation in this snapshot are offered under GPL-3.0-or-later to the extent the relevant rights holders can make that grant. See [LICENSE](LICENSE) and [the scoped notices](LICENSES/README.md). The local credential fixture and credential-bearing builds are excluded from this grant and from redistribution authorization. [Security guidance](SECURITY.md) covers sensitive operations.
+
+## Release packaging
+
+Use an Apple silicon Mac running macOS 27.2.1 (26B131), with Xcode 27.2 (27B52), the macOS 27.2 SDK (26B118) and Swift 6.4.2. The app targets macOS 26.0 or later. Packaging starts from an exact, clean public commit. Use an output directory outside the checkout.
+
+```sh
+make release-help
+make release-test
+make release-check DNIERELEASE_REVISION="$(git rev-parse HEAD)"
+make release-repeatability DNIERELEASE_REVISION="$(git rev-parse HEAD)" \
+  DNIERELEASE_OUTPUT=/private/tmp/dnie-release-repeatability
+```
+
+Choose an absent output directory for a new run. The default unsigned build is a credential-free diagnostic. The repeatability check compares the unsigned app payload inventories from two independent builds. The diagnostic cannot be used for DNIe authentication.
+
+The current local-development permission grants neither credential redistribution nor Apple upload. `make release` requires separate explicit source and credential redistribution authorization for the requested release, an authorized fixture, matching Developer ID Application and Installer identities, and an explicit notarization Keychain profile. See the [release workflow](Release/README.md) for input parameters, verification and interrupted notarization recovery.
+
+The flat package delivers the app to `/Applications/DNIeTokenHost.app`. Registration, activation, clean-machine operation and removal require separate validation. The manual `make uninstall` command applies to the manual development workflow and its recorded installation state.
