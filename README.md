@@ -4,7 +4,7 @@ Source for an experimental native macOS CryptoTokenKit provider for the Spanish 
 
 ## Status and scope
 
-The native provider and a manual Make build/install/uninstall workflow have been validated in the private project environment. This source snapshot has not yet been validated as a credential-bearing build. That evidence does not establish support for other Macs, readers, cards, sites, or signing identities. Developer ID distribution, notarization, clean-machine lifecycle, and release authorization remain open. Automatic updates are unsupported.
+The native provider and a manual Make build/install/uninstall workflow have been validated in the private project environment. The release tooling passed two-build repeatability and package integrity checks with an independently authorized local fixture on the pinned environment, using runtime sources at `87fe63f0b9e48fdd8459df12353710fb94fce2de`. This was an unsigned local test, with no installation, card use or Apple upload. That evidence does not establish support for other Macs, readers, cards, sites, or signing identities. Developer ID distribution, notarization, clean-machine lifecycle, and release authorization remain open. Automatic updates are unsupported.
 
 The app icon has been omitted because its publication rights have not been established. An unbranded app can be built from this source.
 
