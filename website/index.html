@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="DNIe Bridge brings Spain’s DNIe Authentication identity to Safari and other native macOS apps. Explore the experimental project and build it from source.">
+  <meta name="theme-color" content="#101e2d">
+  <title>DNIe Bridge · Spanish DNIe on macOS</title>
+  <link rel="canonical" href="https://emcrisostomo.github.io/dnie-macos/">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://emcrisostomo.github.io/dnie-macos/">
+  <meta property="og:site_name" content="DNIe Bridge">
+  <meta property="og:title" content="DNIe Bridge · Spanish DNIe on macOS">
+  <meta property="og:description" content="Use Spain’s DNIe Authentication identity in Safari and other compatible macOS apps. Explore the experimental project and build it from source.">
+  <meta property="og:image" content="https://emcrisostomo.github.io/dnie-macos/assets/dnie-bridge.png">
+  <meta property="og:image:width" content="512">
+  <meta property="og:image:height" content="512">
+  <meta property="og:image:alt" content="DNIe Bridge icon showing a smart card on a navy background with red and gold bands">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="DNIe Bridge · Spanish DNIe on macOS">
+  <meta name="twitter:description" content="Use Spain’s DNIe Authentication identity in Safari and other compatible macOS apps. Explore the experimental project and build it from source.">
+  <meta name="twitter:image" content="https://emcrisostomo.github.io/dnie-macos/assets/dnie-bridge.png">
+  <meta name="twitter:image:alt" content="DNIe Bridge icon showing a smart card on a navy background with red and gold bands">
+  <link rel="icon" type="image/png" href="assets/dnie-bridge.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body id="top">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="masthead">
+    <header class="site-header container">
+      <a class="brand" href="#top">
+        <img src="assets/dnie-bridge.png" width="36" height="36" alt="">
+        DNIe Bridge
+      </a>
+      <nav aria-label="Main navigation">
+        <a href="#features">Features</a>
+        <a href="#build">Build</a>
+        <a href="#faq">FAQ</a>
+        <a class="nav-source" href="https://github.com/emcrisostomo/dnie-macos">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="main" tabindex="-1">
+      <section class="hero" aria-labelledby="hero-heading">
+        <div class="container hero-layout">
+          <div class="hero-copy">
+            <p class="eyebrow">Open source · Developer preview</p>
+            <h1 id="hero-heading">Your DNIe,<br>native to macOS.</h1>
+            <p class="hero-lede">Use the Authentication identity on your Spanish DNIe in Safari and other compatible macOS apps. Enter your PIN in the system prompt, while private-key operations run on the card.</p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="#build">Build from source</a>
+              <a class="button button-secondary" href="https://github.com/emcrisostomo/dnie-macos">View on GitHub</a>
+            </div>
+          </div>
+          <div class="hero-art" aria-hidden="true">
+            <img src="assets/dnie-bridge.png" width="512" height="512" alt="" fetchpriority="high">
+          </div>
+        </div>
+      </section>
+
+      <section class="status-band" aria-labelledby="status-heading">
+        <div class="container status-layout">
+          <div>
+            <h2 id="status-heading">Experimental development build</h2>
+            <p>Signed, notarized installer distribution and clean-Mac installation are still being validated.</p>
+          </div>
+          <dl class="target">
+            <div><dt>Mac</dt><dd>Apple silicon</dd></div>
+            <div><dt>System</dt><dd>macOS 26+</dd></div>
+            <div><dt>Card</dt><dd>DNIe 4.0</dd></div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="container section" id="features" aria-labelledby="features-heading">
+        <p class="eyebrow">Features</p>
+        <h2 id="features-heading">Built around macOS.</h2>
+        <div class="feature-grid">
+          <article>
+            <h3>Native identity selection</h3>
+            <p>Safari and other compatible apps can select the card’s Authentication identity through macOS. Browser-specific PKCS#11 configuration is unnecessary.</p>
+          </article>
+          <article>
+            <h3>System PIN prompts</h3>
+            <p>macOS presents the authentication prompt. The DNIe performs private-key operations and retains its private keys.</p>
+          </article>
+          <article>
+            <h3>USB CCID readers</h3>
+            <p>DNIe Bridge uses the macOS smart-card stack and a USB CCID reader supported by macOS. The current card target is DNIe 4.0.</p>
+          </article>
+        </div>
+        <div class="architecture">
+          <div>
+            <h3>How the card connects</h3>
+            <p>Compatible apps request an identity through Security.framework. Apple’s CryptoTokenKit routes the operation to the DNIe Bridge extension, which reaches the card through the system smart-card stack.</p>
+          </div>
+          <ol class="flow" aria-label="Identity request path">
+            <li>Safari or native app</li>
+            <li>Security.framework</li>
+            <li>CryptoTokenKit</li>
+            <li>DNIe Bridge extension</li>
+            <li>TKSmartCard and USB reader</li>
+            <li>Physical DNIe</li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="build-section" id="build" aria-labelledby="build-heading">
+        <div class="container section">
+          <div class="build-intro">
+            <div>
+              <p class="eyebrow">Development setup</p>
+              <h2 id="build-heading">Build from source.</h2>
+              <p>Build and sign the development app locally with your Apple Development identity.</p>
+            </div>
+            <div class="requirements">
+              <h3>Requirements</h3>
+              <ul>
+                <li>Apple silicon and macOS 26 or later</li>
+                <li>Full Xcode with a macOS 26 or later SDK and Swift 6.2 or later. Select it as the active command-line developer directory.</li>
+                <li>Python 3.9 or later, <code>jq</code>, and the macOS-provided Make</li>
+                <li>An Apple Development signing identity in your Keychain</li>
+              </ul>
+              <p>Using the built app also requires a supported USB CCID reader and a DNIe 4.0.</p>
+            </div>
+          </div>
+
+          <ol class="steps">
+            <li>
+              <h3>Clone the repository</h3>
+              <pre><code>git clone https://github.com/emcrisostomo/dnie-macos.git
+cd dnie-macos</code></pre>
+            </li>
+            <li>
+              <h3>Prepare the terminal data</h3>
+              <p>The build uses shared generation-2 protocol data distinct from your card’s PIN and private keys. The <a href="https://github.com/emcrisostomo/dnie-macos/blob/main/Release/README.md#prepare-or-rebuild-the-generation-2-resource-offline">release guide</a> identifies the required OpenSC source file and the DGP ARM middleware library.</p>
+              <p>Replace the two input placeholders with absolute paths to those files. The preparation command verifies the pinned inputs and writes the resource locally. Keep the resource in the Git-ignored location below. After a successful copy, the commands remove the temporary file and its scratch directory.</p>
+              <pre><code>(
+  set -eu
+  resource_dir="$(mktemp -d /private/tmp/dnie-resource.XXXXXXXX)"
+  DNIERELEASE_OPENSC_SOURCE="/path/to/cwa-dnie.c" \
+  DNIERELEASE_OFFICIAL_BINARY="/path/to/extracted-arm64-library" \
+  DNIERELEASE_FIXTURE="$resource_dir/generation2.json" make release-prepare
+
+  mkdir -p -m 700 Validation/private/SecureChannel
+  install -m 600 "$resource_dir/generation2.json" \
+    Validation/private/SecureChannel/generation2.json
+
+  rm "$resource_dir/generation2.json"
+  rmdir "$resource_dir"
+)</code></pre>
+            </li>
+            <li>
+              <h3>Build the app</h3>
+              <p>Run Make as your normal user.</p>
+              <pre><code>make build</code></pre>
+              <p>If you have multiple Apple Development identities, use <code>DNIE_SIGNING_IDENTITY_SHA1="YOUR_40_HEX_FINGERPRINT" make build</code>. Replace the placeholder with your chosen identity’s 40-hex fingerprint.</p>
+            </li>
+            <li>
+              <h3>Install and use</h3>
+              <p>Installation may request macOS administrator authorization.</p>
+              <pre><code>make install
+make status</code></pre>
+              <p>Insert your DNIe and select its Authentication identity when a compatible app requests a certificate. Enter your PIN only in the native macOS prompt. Read the <a href="https://github.com/emcrisostomo/dnie-macos/blob/main/SECURITY.md">security guidance</a> before testing a card.</p>
+            </li>
+            <li>
+              <h3>Remove the development build</h3>
+              <p>Run this from the same checkout to remove the app installed through this workflow.</p>
+              <pre><code>make uninstall</code></pre>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="container section faq-section" id="faq" aria-labelledby="faq-heading">
+        <div>
+          <p class="eyebrow">FAQ</p>
+          <h2 id="faq-heading">Good to know.</h2>
+        </div>
+        <div class="questions">
+          <details>
+            <summary>Is there an installer I can download?</summary>
+            <p>DNIe Bridge currently offers source and a local development build workflow. The <a href="https://github.com/emcrisostomo/dnie-macos/blob/main/Release/README.md">release guide</a> covers packaging and the remaining distribution checks.</p>
+          </details>
+          <details>
+            <summary>Can I run checks without a card?</summary>
+            <p>Yes. These offline checks run without a reader, card, or generated terminal-data resource.</p>
+            <pre><code>make check
+make release-test
+swift test --package-path Packages/DNIeCore</code></pre>
+          </details>
+          <details>
+            <summary>Is there a browser plug-in to configure?</summary>
+            <p>Once the extension is installed, compatible apps use the macOS identity framework. An app or site must request a client certificate to offer the Authentication identity.</p>
+          </details>
+          <details>
+            <summary>Where can I find licensing and resource information?</summary>
+            <p>Original project code is offered under GPL-3.0-or-later. The <a href="https://github.com/emcrisostomo/dnie-macos/blob/main/LICENSES/README.md">third-party and resource notices</a> cover attribution and the applicable terms.</p>
+          </details>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <footer class="site-footer">
+    <div class="container footer-layout">
+      <a class="brand" href="#top">
+        <img src="assets/dnie-bridge.png" width="36" height="36" alt="" loading="lazy">
+        DNIe Bridge
+      </a>
+      <nav aria-label="Project resources">
+        <a href="https://github.com/emcrisostomo/dnie-macos">Source code</a>
+        <a href="https://github.com/emcrisostomo/dnie-macos/blob/main/Release/README.md">Release guide</a>
+        <a href="https://github.com/emcrisostomo/dnie-macos/blob/main/SECURITY.md">Security</a>
+        <a href="https://github.com/emcrisostomo/dnie-macos/blob/main/LICENSE">License</a>
+      </nav>
+    </div>
+    <p class="container footer-note">DNIe Bridge is an independent project without endorsement from Apple or the Spanish government.</p>
+  </footer>
+</body>
+</html>

@@ -49,7 +49,7 @@ HOST_RESOURCES = HOST / "Contents/Resources"
 SOURCE_REFERENCE = HOST_RESOURCES / "SOURCE.json"
 NOTICE_HASHES = {
     Path("LICENSE"): "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
-    Path("LICENSES/README.md"): "99985a5737d36a7dc6254f10f2ad6c71abb73d6b2fa21d364a24befc9537b13c",
+    Path("LICENSES/README.md"): "63fdda2f18c23bd1d6672f0d35154f4df82c4c2d765af4fa22aa801e02ff0326",
     Path("LICENSES/OpenSC-LGPL-2.1.txt"): "376b54d4c5f4aa99421823fa4da93e3ab73096fce2400e89858632aa7da24a14",
     Path("LICENSES/OpenSC-resource.md"): "9857b5d2cd4327ef9f17e0204a5d2634df0d5953f725a16d1c05dc000d0e7b4a",
 }
@@ -69,7 +69,7 @@ BUILD_INPUTS = ("DNIeToken.xcodeproj", "HostApp", "TokenExtension",
                 "Packages/DNIeCore/Package.swift", "Packages/DNIeCore/Sources", str(STAGE_SCRIPT),
                 str(CREDENTIAL_FORMAT), *(str(path) for path in NOTICE_HASHES))
 # Reviewed public runtime tree. Change only after source and generated payload review.
-BUILD_INPUT_TREE_SHA256 = "dc503bc1bd4075883eb5d7a78a544b5443e6135b428ec32bb88b9de42c322c0e"
+BUILD_INPUT_TREE_SHA256 = "42c23b13864bf4b4adf030a93171975828c62e866a26477f95c9597b2fe9722f"
 MANIFEST = "manifest.json"
 NOTARY_STATE = "notary-state.json"
 SUBMISSION = "submission.pkg"
