@@ -1,0 +1,2 @@
+# Preserve the verbatim pinned OpenSC COPYING, including its final blank line.
+LICENSES/OpenSC-LGPL-2.1.txt whitespace=-blank-at-eof

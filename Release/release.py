@@ -2,7 +2,10 @@
 """Build and verify the pinned arm64 macOS component package."""
 
 import argparse
+import ctypes
+import errno
 import fcntl
+from functools import lru_cache
 import gzip
 import hashlib
 import io
@@ -20,9 +23,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from types import ModuleType
 import uuid
 import xml.etree.ElementTree as ET
-
 
 class ReleaseError(Exception):
     pass
@@ -45,18 +48,27 @@ HOST_RESOURCES = HOST / "Contents/Resources"
 SOURCE_REFERENCE = HOST_RESOURCES / "SOURCE.json"
 NOTICE_HASHES = {
     Path("LICENSE"): "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
-    Path("LICENSES/README.md"): "5217a4b4d17dfc3fd3243fdbc53d2af19e4ecd1d770725b79e1d98429c4e85c2",
+    Path("LICENSES/README.md"): "99985a5737d36a7dc6254f10f2ad6c71abb73d6b2fa21d364a24befc9537b13c",
+    Path("LICENSES/OpenSC-LGPL-2.1.txt"): "376b54d4c5f4aa99421823fa4da93e3ab73096fce2400e89858632aa7da24a14",
+    Path("LICENSES/OpenSC-resource.md"): "9857b5d2cd4327ef9f17e0204a5d2634df0d5953f725a16d1c05dc000d0e7b4a",
 }
 PUBLIC_REPOSITORY = "https://github.com/emcrisostomo/dnie-macos"
 STAGE_SCRIPT = Path("Validation/Scripts/stage-production-credential-asset.sh")
 CREDENTIAL_SOURCE = Path("Validation/private/SecureChannel/generation2.json")
 CREDENTIAL_CODE = Path("Packages/DNIeCore/Sources/DNIeCore/Evidence/Credentials")
 CREDENTIAL_ASSET = CREDENTIAL_CODE / "Assets/generation2.json"
+CREDENTIAL_FORMAT = Path("Release/credential_format.py")
+CREDENTIAL_FORMAT_SHA256 = "b2a8144ecc23bc9f0ef0a87fcbc29fbf8e9193db4212957c199ae4975299d7db"
+CREDENTIAL_SOURCE_DIR = HOST_RESOURCES / "OpenSC-source"
+CREDENTIAL_EXCERPT = CREDENTIAL_SOURCE_DIR / "generation2.c"
+CREDENTIAL_TRANSFORM = CREDENTIAL_SOURCE_DIR / CREDENTIAL_FORMAT.name
+SOURCE_LIMIT = 65_536
+OFFICIAL_BINARY_LIMIT = 64 * 1024 * 1024
 BUILD_INPUTS = ("DNIeToken.xcodeproj", "HostApp", "TokenExtension",
                 "Packages/DNIeCore/Package.swift", "Packages/DNIeCore/Sources", str(STAGE_SCRIPT),
-                *(str(path) for path in NOTICE_HASHES))
+                str(CREDENTIAL_FORMAT), *(str(path) for path in NOTICE_HASHES))
 # Reviewed public runtime tree. Change only after source and generated payload review.
-BUILD_INPUT_TREE_SHA256 = "3755f807c084d223fcab88b8c1e8f3fa4e5bdb0afad2d89e95fb9ba0ca2dd34b"
+BUILD_INPUT_TREE_SHA256 = "dc503bc1bd4075883eb5d7a78a544b5443e6135b428ec32bb88b9de42c322c0e"
 MANIFEST = "manifest.json"
 NOTARY_STATE = "notary-state.json"
 SUBMISSION = "submission.pkg"
@@ -74,6 +86,18 @@ def hash_file(path):
         for chunk in iter(lambda: stream.read(128 * 1024), b""):
             hasher.update(chunk)
         return hasher.hexdigest()
+
+
+@lru_cache(maxsize=1)
+def credential_transform():
+    # Execute only the exact reviewed source bytes, regardless of import paths or bytecode caches.
+    path = Path(__file__).resolve().with_name(CREDENTIAL_FORMAT.name)
+    data = path.read_bytes()
+    if sha256(data) != CREDENTIAL_FORMAT_SHA256:
+        raise ReleaseError("Credential transformer differs from the reviewed source.")
+    module = ModuleType("credential_format")
+    exec(compile(data, str(path), "exec"), vars(module))
+    return module
 
 
 def command(args, *, label, env=None, cwd=None, binary=False, stderr=False, input_bytes=None):
@@ -117,6 +141,7 @@ def check_running_program(root, revision):
     literal = git(root, "show", f"{revision}:Release/release.py", binary=True)
     if Path(__file__).resolve().read_bytes() != literal:
         raise ReleaseError("Running release program differs from the pinned source revision.")
+    credential_transform()
 
 
 def source_tree(root, revision):
@@ -191,27 +216,100 @@ def canonical(path):
     return path
 
 
-def open_safe_directory(path):
+@lru_cache(maxsize=1)
+def darwin_acl_api():
+    try:
+        api = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        pointer, integer = ctypes.c_void_p, ctypes.c_int
+        api.acl_get_fd_np.argtypes = (integer, integer)
+        api.acl_get_fd_np.restype = pointer
+        api.acl_valid.argtypes = (pointer,)
+        api.acl_valid.restype = integer
+        api.acl_get_entry.argtypes = (pointer, integer, ctypes.POINTER(pointer))
+        api.acl_get_entry.restype = integer
+        api.acl_get_tag_type.argtypes = (pointer, ctypes.POINTER(integer))
+        api.acl_get_tag_type.restype = integer
+        api.acl_free.argtypes = (pointer,)
+        api.acl_free.restype = integer
+    except (OSError, AttributeError):
+        raise ReleaseError("macOS ACL inspection is unavailable.") from None
+    return api
+
+
+def require_safe_acl(fd):
+    if sys.platform != "darwin":
+        raise ReleaseError("Private file operations require macOS ACL inspection.")
+    api = darwin_acl_api()
+    # macOS SDK <sys/acl.h> and acl_get_entry(3).
+    acl_type_extended, first_entry, next_entry, extended_deny = 0x100, 0, -1, 2
+    ctypes.set_errno(0)
+    acl = api.acl_get_fd_np(fd, acl_type_extended)
+    if not acl:
+        # Darwin reports ENOENT for an absent ACL on an open file descriptor.
+        if ctypes.get_errno() == errno.ENOENT:
+            return
+        raise ReleaseError("Private path ACL could not be inspected.")
+    try:
+        if api.acl_valid(acl) != 0:
+            raise ReleaseError("Private path ACL could not be validated.")
+        entry = ctypes.c_void_p()
+        tag = ctypes.c_int()
+        entry_id = first_entry
+        while True:
+            ctypes.set_errno(0)
+            result = api.acl_get_entry(acl, entry_id, ctypes.byref(entry))
+            if result == -1 and entry_id == next_entry and ctypes.get_errno() == errno.EINVAL:
+                break
+            if result != 0 or api.acl_get_tag_type(entry, ctypes.byref(tag)) != 0:
+                raise ReleaseError("Private path ACL could not be inspected.")
+            if tag.value != extended_deny:
+                raise ReleaseError("Private path ACL contains an entry that could grant access.")
+            entry_id = next_entry
+    finally:
+        api.acl_free(acl)
+
+
+def open_safe_directory(path, *, excluded=None):
     path = canonical(path)
     directory_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
     directory = os.open("/", directory_flags)
     try:
-        for part in path.parts[1:]:
-            next_directory = os.open(part, directory_flags, dir_fd=directory)
-            os.close(directory)
-            directory = next_directory
+        for part in (*path.parts[1:], None):
             info = os.fstat(directory)
+            if excluded is not None and os.path.samestat(info, excluded):
+                raise ReleaseError("Output must be outside the source checkout.")
             if (info.st_uid not in (0, os.getuid())
                     or (info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX)):
                 raise ReleaseError("Private path has an untrusted directory ancestor.")
+            require_safe_acl(directory)
+            if part is not None:
+                next_directory = os.open(part, directory_flags, dir_fd=directory)
+                os.close(directory)
+                directory = next_directory
         return directory
     except BaseException:
         os.close(directory)
         raise
 
 
-def validate_output_parent(output):
-    directory = open_safe_directory(output.parent)
+def open_output_parent(output, root):
+    checkout = root.stat()
+    directory = open_safe_directory(output.parent, excluded=checkout)
+    try:
+        try:
+            target = os.stat(output.name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            return directory
+        if os.path.samestat(target, checkout):
+            raise ReleaseError("Output must be outside the source checkout.")
+        return directory
+    except BaseException:
+        os.close(directory)
+        raise
+
+
+def validate_output_parent(output, root):
+    directory = open_output_parent(output, root)
     try:
         info = os.fstat(directory)
         if info.st_uid != os.getuid() and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX):
@@ -228,11 +326,15 @@ def open_regular(path, mode):
     finally:
         os.close(directory)
     stream = os.fdopen(fd, "rb")
-    info = os.fstat(stream.fileno())
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-            or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != mode):
+    try:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != mode):
+            raise ReleaseError("Private file must be owned by the invoking user, mode 0600 and unlinked.")
+        require_safe_acl(stream.fileno())
+    except BaseException:
         stream.close()
-        raise ReleaseError("Private file must be owned by the invoking user, mode 0600 and unlinked.")
+        raise
     return stream
 
 def read_private(path):
@@ -248,6 +350,86 @@ def read_private(path):
     if not data or len(data) > 65_536:
         raise ReleaseError("Private input size is outside the supported range.")
     return data
+
+
+def read_preparation_input(path, limit, label):
+    try:
+        path = canonical(path)
+        directory = open_safe_directory(path.parent)
+        try:
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        finally:
+            os.close(directory)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_nlink != 1 or info.st_mode & 0o7022):
+                raise ReleaseError(f"{label} must be an owner-controlled regular file.")
+            require_safe_acl(stream.fileno())
+            data = stream.read(limit + 1)
+    except OSError:
+        raise ReleaseError(f"{label} could not be read safely.") from None
+    if not data or len(data) > limit:
+        raise ReleaseError(f"{label} size is outside the supported range.")
+    return data
+
+
+def credential_bytes(source, official_binary):
+    credential_format = credential_transform()
+    try:
+        data = read_preparation_input(source, SOURCE_LIMIT, "Credential source input")
+        if official_binary is None:
+            return credential_format.fixture_from_excerpt(data)
+        official = read_preparation_input(official_binary, OFFICIAL_BINARY_LIMIT, "DGP binary input")
+        return credential_format.fixture_from_inputs(data, official)
+    except credential_format.CredentialFormatError as error:
+        raise ReleaseError(str(error)) from None
+    except (ValueError, OverflowError):
+        raise ReleaseError("Credential encoding failed.") from None
+
+
+def prepare_credential(source, official_binary, output, root):
+    try:
+        output = canonical(output)
+        directory = open_output_parent(output, root)
+    except OSError:
+        raise ReleaseError("Credential output directory could not be opened safely.") from None
+    except ReleaseError as error:
+        raise ReleaseError(f"Credential output path is unsafe. {error}") from None
+
+    try:
+        info = os.fstat(directory)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ReleaseError("Credential output directory must be owned by the invoking user and mode 0700.")
+        try:
+            os.stat(output.name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ReleaseError("Credential output already exists. Choose an absent file.")
+
+        data = credential_bytes(source, official_binary)
+        pending = f".credential-{uuid.uuid4().hex}"
+        fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     mode=0o600, dir_fd=directory)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                require_safe_acl(stream.fileno())
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            # Publish atomically without replacing a file that appeared during preparation.
+            os.link(pending, output.name, src_dir_fd=directory, dst_dir_fd=directory,
+                    follow_symlinks=False)
+        finally:
+            os.unlink(pending, dir_fd=directory)
+    except FileExistsError:
+        raise ReleaseError("Credential output already exists. Choose an absent file.") from None
+    except OSError:
+        raise ReleaseError("Credential output could not be written safely.") from None
+    finally:
+        os.close(directory)
 
 
 def decode_record(data, label):
@@ -297,6 +479,7 @@ def write_bytes(path, data):
     with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".pending-", delete=False) as tmp:
         pending = Path(tmp.name)
         try:
+            require_safe_acl(tmp.fileno())
             tmp.write(data)
             tmp.flush()
             os.fsync(tmp.fileno())
@@ -381,11 +564,41 @@ def add_notices(source, payload, identity):
 
 def verify_notices(root, contents, identity):
     for relative, digest in NOTICE_HASHES.items():
-        if contents[(HOST_RESOURCES / relative).as_posix()]["sha256"] != digest:
+        if contents.get((HOST_RESOURCES / relative).as_posix(), {}).get("sha256") != digest:
             raise ReleaseError("Packaged licence or provenance notice differs from reviewed source.")
     reference = decode_record((root / SOURCE_REFERENCE).read_bytes(), "Corresponding source reference")
     if reference != corresponding_source(identity):
         raise ReleaseError("Corresponding source reference differs from the pinned source.")
+
+
+def add_credential_sources(source, payload, fixture):
+    transform = source / CREDENTIAL_FORMAT
+    if hash_file(transform) != CREDENTIAL_FORMAT_SHA256:
+        raise ReleaseError("Credential transformer differs from the reviewed source.")
+    try:
+        excerpt = credential_transform().source_excerpt_from_fixture(fixture)
+    except ValueError:
+        raise ReleaseError("Authorized credential input does not reproduce from the pinned source fields.") from None
+    (payload / CREDENTIAL_SOURCE_DIR).mkdir()
+    shutil.copyfile(transform, payload / CREDENTIAL_TRANSFORM)
+    write_bytes(payload / CREDENTIAL_EXCERPT, excerpt)
+
+
+def verify_credential_sources(root, contents, fixture_hash):
+    if contents[(ASSETS / "generation2.json").as_posix()]["sha256"] != fixture_hash:
+        raise ReleaseError("Packaged credential bytes differ from the approved input.")
+    if contents[CREDENTIAL_TRANSFORM.as_posix()]["sha256"] != CREDENTIAL_FORMAT_SHA256:
+        raise ReleaseError("Packaged credential transformer differs from the reviewed source.")
+    try:
+        with (root / CREDENTIAL_EXCERPT).open("rb") as stream:
+            excerpt = stream.read(SOURCE_LIMIT + 1)
+        if len(excerpt) > SOURCE_LIMIT:
+            raise ValueError()
+        rebuilt = credential_transform().fixture_from_excerpt(excerpt)
+    except ValueError:
+        raise ReleaseError("Packaged credential source excerpt differs from the reviewed format.") from None
+    if sha256(rebuilt) != fixture_hash:
+        raise ReleaseError("Packaged credential source does not reproduce the approved input.")
 
 
 def payload_paths(credential, signed):
@@ -397,7 +610,7 @@ def payload_paths(credential, signed):
         *(HOST_RESOURCES / relative for relative in NOTICE_HASHES),
     }
     if credential:
-        files.add(ASSETS / "generation2.json")
+        files.update((ASSETS / "generation2.json", CREDENTIAL_EXCERPT, CREDENTIAL_TRANSFORM))
     if signed:
         files.update(bundle / "Contents/_CodeSignature/CodeResources"
                      for bundle in (HOST, EXTENSION))
@@ -431,6 +644,8 @@ def check_payload(root, identity, *, fixture_hash=None, signed=False, run=comman
            for name, item in contents.items()):
         raise ReleaseError("Payload node mode does not match release policy.")
     verify_notices(root, contents, identity)
+    if fixture_hash is not None:
+        verify_credential_sources(root, contents, fixture_hash)
     for bundle, identifier, executable, package_type in (
             (HOST, CONFIG["app_id"], "DNIeTokenHost", "APPL"),
             (EXTENSION, CONFIG["extension_id"], "DNIeTokenExtension", "XPC!")):
@@ -470,8 +685,6 @@ def check_payload(root, identity, *, fixture_hash=None, signed=False, run=comman
     if (resource_info.get("CFBundleIdentifier") != "dniecore.DNIeCore.resources"
             or "CFBundleExecutable" in resource_info):
         raise ReleaseError("Swift package resource bundle metadata is unexpected.")
-    if fixture_hash is not None and contents[(ASSETS / "generation2.json").as_posix()]["sha256"] != fixture_hash:
-        raise ReleaseError("Packaged credential bytes differ from the approved input.")
     return contents
 
 
@@ -531,6 +744,8 @@ def build_payload(root, identity, tree, work, credential_data=None):
     command(("/usr/bin/ditto", "--noqtn", derived / "Build/Products/Release" / HOST, payload / HOST),
             label="Payload staging")
     add_notices(source, payload, identity)
+    if credential_data is not None:
+        add_credential_sources(source, payload, credential_data)
     normalize_unsigned_modes(payload, credential=credential_data is not None)
     return payload
 
@@ -1123,6 +1338,8 @@ HELP = """Release packaging
   make release-check          Check the exact checkout and pinned toolchain
   make release-unsigned       Build and inspect a credential-free diagnostic package
   make release-repeatability  Compare two clean unsigned payloads and record the first difference
+  make release-prepare        Prepare the private OpenSC-derived credential resource offline
+  make release-rebuild        Rebuild the resource from its packaged corresponding source
   make release                Run the authorized Developer ID and notarization workflow
   make release-verify         Re-inspect an existing diagnostic or stapled package
   make release-test           Run offline packaging tests
@@ -1139,13 +1356,17 @@ class ReleaseArgumentParser(argparse.ArgumentParser):
 
 def arguments():
     parser = ReleaseArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("help", "check", "unsigned", "repeatability", "release", "verify"))
+    parser.add_argument("operation", choices=("help", "check", "unsigned", "repeatability", "release", "verify",
+                                              "prepare-credential", "rebuild-credential"))
     parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--revision", default=os.getenv("DNIERELEASE_REVISION"))
-    parser.add_argument("--output", type=Path, default=os.getenv("DNIERELEASE_OUTPUT"))
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--authorization", type=Path, default=os.getenv("DNIERELEASE_AUTHORIZATION"))
     parser.add_argument("--authorization-sha256", default=os.getenv("DNIERELEASE_AUTHORIZATION_SHA256"))
     parser.add_argument("--fixture", type=Path, default=os.getenv("DNIERELEASE_FIXTURE"))
+    parser.add_argument("--opensc-source", type=Path, default=os.getenv("DNIERELEASE_OPENSC_SOURCE"))
+    parser.add_argument("--official-binary", type=Path, default=os.getenv("DNIERELEASE_OFFICIAL_BINARY"))
+    parser.add_argument("--excerpt", type=Path, default=os.getenv("DNIERELEASE_EXCERPT"))
     parser.add_argument("--resume", action="store_true", default=os.getenv("DNIERELEASE_RESUME") == "1")
     return parser.parse_args()
 
@@ -1160,6 +1381,23 @@ def main():
     if args.operation == "help":
         print(HELP.rstrip())
         return
+    if args.operation in ("prepare-credential", "rebuild-credential"):
+        if sys.platform != "darwin" or os.geteuid() == 0:
+            raise ReleaseError("Run credential preparation on macOS as the invoking user without sudo.")
+        output = args.output or args.fixture
+        if output is None:
+            raise ReleaseError("Provide an absent private credential output file.")
+        if args.operation == "prepare-credential":
+            if args.opensc_source is None or args.official_binary is None:
+                raise ReleaseError("Provide both pinned credential preparation inputs.")
+            source, official_binary = args.opensc_source, args.official_binary
+        else:
+            if args.excerpt is None:
+                raise ReleaseError("Provide the corresponding credential source excerpt.")
+            source, official_binary = args.excerpt, None
+        prepare_credential(source, official_binary, output, Path(__file__).resolve().parents[1])
+        print("Credential preparation passed. Private fixture written.")
+        return
     if sys.platform != "darwin" or os.geteuid() == 0:
         raise ReleaseError("Run on macOS as the invoking user without sudo.")
     os.umask(0o022)
@@ -1171,12 +1409,11 @@ def main():
     if args.operation == "check":
         print(json.dumps({"source": identity, "toolchain": TOOLCHAIN, "configuration": CONFIG}, indent=2))
         return
-    if args.output is None:
+    output_path = args.output or os.getenv("DNIERELEASE_OUTPUT")
+    if output_path is None:
         raise ReleaseError("Provide an output path outside the source checkout.")
-    output = canonical(args.output)
-    if output == root or root in output.parents:
-        raise ReleaseError("Output must be outside the source checkout.")
-    validate_output_parent(output)
+    output = canonical(Path(output_path))
+    validate_output_parent(output, root)
     existing = args.operation == "verify" or (args.operation == "release" and args.resume)
     auth, fixture = None, None
     if args.operation == "release":
@@ -1192,16 +1429,20 @@ def main():
             output.mkdir(mode=0o700)
         except FileExistsError:
             raise ReleaseError("Output already exists. Choose a new path or explicitly resume an existing release.") from None
-    info = output.lstat()
-    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-            or stat.S_IMODE(info.st_mode) != 0o700):
-        raise ReleaseError("Output directory must be unlinked, owner-controlled and mode 0700.")
-    lock_fd = os.open(output / ".lock", os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR, 0o600)
+    directory = open_safe_directory(output, excluded=root.stat())
+    try:
+        info = os.fstat(directory)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ReleaseError("Output directory must be unlinked, owner-controlled and mode 0700.")
+        lock_fd = os.open(".lock", os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR, 0o600, dir_fd=directory)
+    finally:
+        os.close(directory)
     try:
         lock_info = os.fstat(lock_fd)
         if (not stat.S_ISREG(lock_info.st_mode) or lock_info.st_nlink != 1
                 or lock_info.st_uid != os.getuid() or stat.S_IMODE(lock_info.st_mode) != 0o600):
             raise ReleaseError("Output lock must be owned by the invoking user, mode 0600 and unlinked.")
+        require_safe_acl(lock_fd)
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if args.operation in ("unsigned", "repeatability"):
             diagnostic_build(root, identity, tree, output, args.operation == "repeatability")

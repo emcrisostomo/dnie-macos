@@ -1,6 +1,6 @@
 # Security guidance
 
-This source implements a native smart-card identity provider. A DNIe is a real identity card: use only a card and reader you are authorized to operate. Keep terminal credential fixtures and every built app that embeds them private. Never commit, upload, archive for sharing, or publish either one.
+This source implements a native smart-card identity provider. A DNIe is a real identity card: use only a card and reader you are authorized to operate. Keep terminal credential fixtures and local-development apps private. Never commit credential values or generated credential source. Any distribution or upload of the separately attributed release resource, its editable source and a containing app requires exact release approval covering disclosure and the destination, including Apple notarization transfer. See the release workflow and scoped resource notices.
 
 Enter the known-correct DNIe PIN only in the native macOS authentication prompt. Never place a PIN in a command, file, fixture, screenshot, or log. Do not deliberately try a wrong PIN. Stop card operations after an unexplained response, retry indication, or state change, and diagnose offline before another attempt. Do not send administrative or undocumented state-changing commands to the card.
 

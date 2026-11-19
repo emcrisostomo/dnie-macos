@@ -3,7 +3,7 @@ SHELL := /bin/zsh
 .NOTPARALLEL:
 
 WORKFLOW := Validation/Product/Scripts/developer-workflow.sh
-RELEASE_GOALS := release-check release-unsigned release-repeatability release release-verify release-test
+RELEASE_GOALS := release-prepare release-rebuild release-check release-unsigned release-repeatability release release-verify release-test
 OPERATIONAL_GOALS := check build install status test upgrade uninstall disable enable clean $(RELEASE_GOALS)
 REQUESTED_OPERATIONS := $(filter $(OPERATIONAL_GOALS),$(MAKECMDGOALS))
 
@@ -52,8 +52,14 @@ release-help:
 release-check release-unsigned release-repeatability release-verify:
 	@/usr/bin/python3 -B Release/release.py $(@:release-%=%)
 
+release-prepare:
+	@/usr/bin/python3 -B Release/release.py prepare-credential
+
+release-rebuild:
+	@/usr/bin/python3 -B Release/release.py rebuild-credential
+
 release:
 	@/usr/bin/python3 -B Release/release.py release
 
 release-test:
-	@/usr/bin/python3 -B -m unittest discover -s Release -p test_release.py -v
+	@/usr/bin/python3 -B -m unittest discover -s Release -p 'test_*.py' -v

@@ -39,16 +39,65 @@ filesystem extended metadata, signing timestamps and notarization tickets can di
 Verification checks the installer BOM against the raw archive. The only accepted AppleDouble
 records carry the macOS provenance attribute and must have matching expanded-file values.
 
-The app bundle includes the unmodified GPLv3 text, the scoped public-source notices and
-its exact Git revision, tree and corresponding public source URL. The URL is available
-once that exact source revision is published. Inclusion of the notices does not establish
-redistribution or credential authorization.
+The app bundle includes the unmodified GPLv3 text, the scoped public-source notices, the
+original OpenSC LGPLv2.1 text and the exact project source revision, tree and URL.
+The diagnostic carries the notices but omits the credential asset and its source excerpt.
+
+## Prepare or rebuild the generation-2 resource offline
+
+Obtain `src/libopensc/cwa-dnie.c` from OpenSC commit
+`bc9a74a44565c091fc473d87193ec3a35c55b1f0` and separately extract the ARM64 PKCS#11
+library from DGP's macOS ARM middleware 1.6.8 into a private scratch directory.
+The inputs are data files. The preparation command reads them without installing or
+executing either one. The reviewed sources, hashes and licence election are recorded
+in the [OpenSC resource notice](../LICENSES/OpenSC-resource.md).
+
+```sh
+credential_parent="$(mktemp -d /private/tmp/dnie-credential.XXXXXXXX)"
+export DNIERELEASE_OPENSC_SOURCE="/canonical/path/to/cwa-dnie.c"
+export DNIERELEASE_OFFICIAL_BINARY="/canonical/path/to/extracted-arm64-library"
+export DNIERELEASE_FIXTURE="$credential_parent/generation2.json"
+make release-prepare
+```
+
+This validates both input hashes, the presence of all 18 generation-2 fields in the
+official library and their ordered manifest. It writes the same deterministic fixture format
+used by the runtime verifier. Supply owner-controlled, unlinked regular input files with
+canonical paths. The output must be absent under an existing owner-only directory with
+mode `0700` outside the checkout. The completed file has mode `0600`.
+The macOS custody checks reject ACL entries that could grant access on these files
+or their directory ancestors. Keep the inputs and outputs outside Git.
+Only categorical results are printed.
+
+The credential-bearing app carries the converted data source and Python transformer in
+`Contents/Resources/OpenSC-source/`. Rebuild the exact resource from its corresponding
+source using the released source checkout and an absent private output name. Copy the
+excerpt from the app or the extracted package into a fresh user-owned directory first.
+
+```sh
+credential_parent="$(mktemp -d /private/tmp/dnie-rebuild.XXXXXXXX)"
+(
+  umask 077
+  cat "/canonical/path/to/DNIeTokenHost.app/Contents/Resources/OpenSC-source/generation2.c" \
+    > "$credential_parent/generation2.c"
+)
+export DNIERELEASE_EXCERPT="$credential_parent/generation2.c"
+export DNIERELEASE_FIXTURE="$credential_parent/rebuilt-generation2.json"
+make release-rebuild
+```
+
+The rebuild verifies the canonical source excerpt and its pinned field manifest.
+It requires macOS, Python 3.9 or later and the excerpt, without access to the upstream
+OpenSC file, the DGP binary, a private repository or an Xcode toolchain.
+The full corresponding project source is identified by the bundle's `SOURCE.json`.
 
 ## Authorized Developer ID release
 
 Create an independently reviewed authorization record outside the checkout before running
-`make release`. The approval must cover the exact committed source, the exact credential
-input and its redistribution, and submission of the credential-bearing package to Apple.
+`make release`. The approval must cover the exact committed source, redistribution of the
+exact credential input and its reproducible source excerpt, and transfer of both to Apple
+in the notarization package. The corresponding project source must be available to recipients
+at the recorded source location before binary distribution.
 The tool validates the record's integrity and scope. The person approving the record is
 responsible for establishing the grants it asserts.
 
@@ -104,8 +153,9 @@ make release-verify
 
 The fixture must also be an owner-only unlinked regular file with mode `0600`. The workflow
 checks its approved digest before copying it into private exported build trees. The two
-authorized unsigned payloads must agree before any signing. The existing
-staging script and the runtime fixture verifier both validate the staged input. The canonical
+authorized unsigned payloads must agree before any signing. Each package check also verifies
+the exact transformer and regenerates the approved fixture from its packaged source excerpt.
+The existing staging script and the runtime fixture verifier both validate the staged input. The canonical
 development fixture and staged asset are outside the workflow's write scope.
 
 Once Apple returns a submission ID, the output directory records it privately. To resume
@@ -119,3 +169,15 @@ status unresolved. Preserve the private state while investigating either outcome
 acceptance, ticket validation and Gatekeeper acceptance. It remains unverified on a clean
 target until the separate lifecycle checks pass. Keep submission artifacts and records in
 the private output directory. Do not commit them.
+
+
+For binary download distribution, provide equivalent access at no extra charge to the exact
+complete Corresponding Source for as long as the binary is offered. Put it at the binary
+download location or place clear directions beside that download to the project-controlled
+source location. Include the exact project build/packaging scripts and the editable 18-field
+resource source with its conversion procedure. A URL/hash or approval assertion alone does
+not establish that the source is actually available. The source excerpt supplied inside the
+package must also be included in that approved source delivery; no values need enter public
+Git. Verify source access before approving publication of any binary. "Limited" or
+"restricted-scope" here describes selecting the 18 fields, never additional restrictions on
+recipients' GPL rights.

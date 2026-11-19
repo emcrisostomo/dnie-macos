@@ -6,6 +6,7 @@ import os
 import plistlib
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -14,12 +15,272 @@ from types import SimpleNamespace
 
 import release
 
+credential_format = release.credential_transform()
+
 
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name).resolve()
+        self.checkout = Path(release.__file__).resolve().parents[1]
+
+    def test_unrecognized_opensc_source_is_rejected_before_writing(self):
+        source = self.root / "source.c"
+        source.write_bytes(b"synthetic source contents")
+        official = self.root / "middleware"
+        official.write_bytes(b"synthetic official binary")
+        output = self.root / "generation2.json"
+        with self.assertRaisesRegex(release.ReleaseError, "OpenSC source hash"):
+            release.prepare_credential(source, official, output, self.checkout)
+        self.assertEqual(set(self.root.iterdir()), {source, official})
+
+    def test_credential_output_rejects_untrusted_or_existing_paths(self):
+        source = self.root / "missing-input"
+        checkout = self.root / "checkout"
+        checkout.mkdir(mode=0o700)
+        shared = self.root / "shared"
+        shared.mkdir(mode=0o755)
+        private = self.root / "private"
+        private.mkdir(mode=0o700)
+        existing = private / "generation2.json"
+        existing.write_bytes(b"preserve these bytes")
+        existing.chmod(0o600)
+        dangling = private / "dangling"
+        dangling.symlink_to(private / "absent")
+        for output in (checkout / "generation2.json", shared / "generation2.json",
+                       existing, dangling, self.root / "missing-dir/generation2.json"):
+            with self.subTest(output=output.name), self.assertRaisesRegex(
+                    release.ReleaseError, "output|Output"):
+                release.prepare_credential(source, source, output, checkout)
+        self.assertEqual(existing.read_bytes(), b"preserve these bytes")
+        self.assertTrue(dangling.is_symlink())
+        self.assertEqual(set(private.iterdir()), {existing, dangling})
+
+    def synthetic_credential_inputs(self):
+        fields = {name: b"test-field:" + name.encode() for name in credential_format.FIELD_NAMES}
+        for role in ("ifd", "ifd_pin"):
+            fields[f"{role}_modulus_1"] = bytes.fromhex("0ca1")
+            fields[f"{role}_public_exponent"] = bytes.fromhex("11")
+            fields[f"{role}_private_exponent_1"] = bytes.fromhex("0ac1")
+        declarations = [
+            f"static const unsigned char {name}[] = {{"
+            + ", ".join(f"0x{value:02x}" for value in data)
+            + "};\n"
+            for name, data in fields.items()
+        ]
+        source, official = self.root / "upstream.c", self.root / "middleware"
+        source.write_text("".join(declarations))
+        official.write_bytes(b"\0".join(fields.values()))
+        framed = b"".join(name.encode() + b"\0" + len(data).to_bytes(4, "big") + data
+                          for name, data in fields.items())
+        pins = {"SOURCE_SHA256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "OFFICIAL_BINARY_SHA256": hashlib.sha256(official.read_bytes()).hexdigest(),
+                "MANIFEST_V2_SHA256": hashlib.sha256(framed).hexdigest()}
+        return source, official, fields, pins
+
+    def test_credential_preparation_reconstructs_identical_fixture_from_packaged_source(self):
+        source, official, fields, pins = self.synthetic_credential_inputs()
+        checkout = self.checkout
+        scratch_output = self.root / "prepared.json"
+        rebuilt_output = self.root / "rebuilt.json"
+        payload = self.root / "payload"
+        bundled_fixture = payload / release.ASSETS / "generation2.json"
+        bundled_fixture.parent.mkdir(parents=True)
+        (payload / release.HOST_RESOURCES).mkdir(parents=True)
+        source_tree = Path(release.__file__).resolve().parents[1]
+
+        with patch.multiple(credential_format, **pins):
+            release.prepare_credential(source, official, scratch_output, checkout)
+            encoded = scratch_output.read_bytes()
+            self.assertEqual(scratch_output.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(scratch_output.stat().st_nlink, 1)
+            self.assertEqual(json.loads(encoded)["fields_hex"],
+                             {name: data.hex() for name, data in fields.items()})
+            self.assertEqual(
+                json.loads(encoded)["local_private_keys_pkcs1_hex"]["user"],
+                "301d02010002020ca102011102020ac102013d020135020135020131020126")
+            bundled_fixture.write_bytes(encoded)
+            release.add_credential_sources(source_tree, payload, encoded)
+            excerpt = payload / release.CREDENTIAL_EXCERPT
+            self.assertIn(b"Copyright (C) 2010 Juan Antonio Martinez", excerpt.read_bytes())
+            self.assertIn(b"GNU General Public License", excerpt.read_bytes())
+            fixture_digest = hashlib.sha256(encoded).hexdigest()
+            release.verify_credential_sources(payload, release.inventory(payload), fixture_digest)
+            release.prepare_credential(excerpt, None, rebuilt_output, checkout)
+            self.assertEqual(rebuilt_output.read_bytes(), encoded)
+            self.assertEqual(rebuilt_output.stat().st_mode & 0o777, 0o600)
+
+            changed = excerpt.read_bytes().replace(b"Modified 2026-11-19", b"Modified 2026-11-20")
+            excerpt.write_bytes(changed)
+            with self.assertRaisesRegex(release.ReleaseError, "source excerpt differs"):
+                release.verify_credential_sources(payload, release.inventory(payload), fixture_digest)
+
+    def test_credential_pins_prevent_wrong_binary_missing_field_or_manifest_drift(self):
+        source, official, fields, pins = self.synthetic_credential_inputs()
+        output = self.root / "generation2.json"
+        checkout = self.checkout
+        original_binary = official.read_bytes()
+        official.write_bytes(original_binary.replace(fields["sn_ifd_pin_1"], b"absent"))
+        with patch.multiple(credential_format, **pins), self.assertRaisesRegex(
+                release.ReleaseError, "DGP binary hash"):
+            release.prepare_credential(source, official, output, checkout)
+        missing_field = {**pins, "OFFICIAL_BINARY_SHA256": hashlib.sha256(official.read_bytes()).hexdigest()}
+        with patch.multiple(credential_format, **missing_field), self.assertRaisesRegex(
+                release.ReleaseError, "absent from the official DGP binary"):
+            release.prepare_credential(source, official, output, checkout)
+        official.write_bytes(original_binary)
+        with patch.multiple(credential_format, **{**pins, "MANIFEST_V2_SHA256": "0" * 64}), \
+                self.assertRaisesRegex(release.ReleaseError, "manifest"):
+            release.prepare_credential(source, official, output, checkout)
+        self.assertEqual(set(self.root.iterdir()), {source, official})
+
+    def test_credential_write_race_preserves_existing_file_and_removes_temporary(self):
+        source, official, _, pins = self.synthetic_credential_inputs()
+        output = self.root / "generation2.json"
+        original_link = os.link
+
+        def competing_creation(*args, **kwargs):
+            output.write_bytes(b"existing")
+            return original_link(*args, **kwargs)
+
+        with patch.multiple(credential_format, **pins), patch.object(os, "link", competing_creation), \
+                self.assertRaisesRegex(release.ReleaseError, "already exists"):
+            release.prepare_credential(source, official, output, self.checkout)
+        self.assertEqual(output.read_bytes(), b"existing")
+        self.assertEqual(set(self.root.iterdir()), {source, official, output})
+
+    def test_credential_inputs_reject_links_and_nonregular_files(self):
+        source, official, _, pins = self.synthetic_credential_inputs()
+        output = self.root / "absent"
+        checkout = self.checkout
+        symlink = self.root / "symlink"
+        symlink.symlink_to(source)
+        hardlink = self.root / "hardlink"
+        os.link(official, hardlink)
+        fifo = self.root / "fifo"
+        os.mkfifo(fifo)
+        with patch.multiple(credential_format, **pins):
+            for path in (symlink, hardlink, fifo):
+                with self.subTest(input=path.name), self.assertRaises(release.ReleaseError):
+                    release.prepare_credential(path, official, output, checkout)
+        self.assertFalse(output.exists())
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires the macOS ACL implementation")
+    def test_credential_paths_reject_acl_grants_without_writing(self):
+        source, official, _, pins = self.synthetic_credential_inputs()
+        checkout = self.checkout
+        ancestor = self.root / "acl"
+        directory = ancestor / "private"
+        directory.mkdir(parents=True, mode=0o700)
+        ancestor.chmod(0o700)
+        source.chmod(0o600)
+        for node, grant, output in (
+                (ancestor, "everyone allow list,search", directory / "absent"),
+                (source, "everyone allow read", self.root / "absent")):
+            subprocess.run(("/bin/chmod", "+a", grant, node), check=True, capture_output=True)
+            try:
+                self.assertEqual(node.stat().st_mode & 0o777, 0o700 if node.is_dir() else 0o600)
+                with patch.multiple(credential_format, **pins), self.assertRaisesRegex(release.ReleaseError, "ACL"):
+                    release.prepare_credential(source, official, output, checkout)
+                self.assertFalse(output.exists())
+                self.assertEqual(list(directory.iterdir()), [])
+            finally:
+                subprocess.run(("/bin/chmod", "-N", node), check=True, capture_output=True)
+        subprocess.run(("/bin/chmod", "+a", "everyone allow read", source), check=True, capture_output=True)
+        try:
+            with self.assertRaisesRegex(release.ReleaseError, "ACL"):
+                release.read_private(source)
+        finally:
+            subprocess.run(("/bin/chmod", "-N", source), check=True, capture_output=True)
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires the macOS ACL implementation")
+    def test_credential_rejects_new_pending_acl_before_write_and_removes_file(self):
+        source, official, _, pins = self.synthetic_credential_inputs()
+        checkout = self.checkout
+        output = self.root / "absent"
+        original_open = os.open
+        original_unlink = os.unlink
+        pending_sizes = []
+
+        def open_with_pending_acl(path, *args, **kwargs):
+            fd = original_open(path, *args, **kwargs)
+            if str(path).startswith(".credential-"):
+                subprocess.run(("/bin/chmod", "+a", "everyone allow read", self.root / path),
+                               check=True, capture_output=True)
+            return fd
+
+        def record_pending_size(path, *args, **kwargs):
+            if str(path).startswith(".credential-"):
+                pending_sizes.append((self.root / path).stat().st_size)
+            return original_unlink(path, *args, **kwargs)
+
+        with patch.multiple(credential_format, **pins), patch.object(os, "open", open_with_pending_acl), \
+                patch.object(os, "unlink", record_pending_size):
+            with self.assertRaisesRegex(release.ReleaseError, "ACL"):
+                release.prepare_credential(source, official, output, checkout)
+        self.assertEqual(pending_sizes, [0])
+        self.assertEqual(set(self.root.iterdir()), {source, official})
+
+    def test_credential_output_rejects_checkout_identity_through_case_alias(self):
+        source, official, _, pins = self.synthetic_credential_inputs()
+        checkout = self.root / "checkout"
+        nested = checkout / "nested"
+        nested.mkdir(parents=True, mode=0o700)
+        alias = self.root / "CHECKOUT"
+        if not alias.exists() or not alias.samefile(checkout):
+            self.skipTest("requires case-insensitive lookup on the test volume")
+        output = alias / "nested" / "generation2.json"
+        with patch.multiple(credential_format, **pins), self.assertRaisesRegex(release.ReleaseError, "source checkout"):
+            release.prepare_credential(source, official, output, checkout)
+        for target in (alias, output):
+            with self.assertRaisesRegex(release.ReleaseError, "source checkout"):
+                release.validate_output_parent(target, checkout)
+        self.assertFalse(output.exists())
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires the macOS ACL implementation")
+    def test_private_directory_accepts_deny_only_acl_and_rejects_inspection_failure(self):
+        subprocess.run(("/bin/chmod", "+a", "everyone deny delete", self.root),
+                       check=True, capture_output=True)
+        try:
+            fd = release.open_safe_directory(self.root)
+            os.close(fd)
+        finally:
+            subprocess.run(("/bin/chmod", "-N", self.root), check=True, capture_output=True)
+
+        def inspection_failure(*args):
+            release.ctypes.set_errno(release.errno.EACCES)
+            return None
+
+        api = release.darwin_acl_api()
+        with patch.object(api, "acl_get_fd_np", inspection_failure), self.assertRaisesRegex(
+                release.ReleaseError, "ACL could not be inspected"):
+            release.open_safe_directory(self.root)
+
+    def test_credential_custody_commands_fail_before_file_access_on_unsupported_platform(self):
+        for operation in ("prepare-credential", "rebuild-credential"):
+            args = SimpleNamespace(operation=operation)
+            with patch.object(release.sys, "platform", "linux"), \
+                    patch.object(release, "arguments", return_value=args), \
+                    patch.object(release.signal, "signal"):
+                with self.assertRaisesRegex(release.ReleaseError, "on macOS"):
+                    release.main()
+
+    def test_opensc_notices_are_required_and_integrity_checked(self):
+        source = Path(release.__file__).resolve().parents[1]
+        identity = {"revision": "2" * 40, "tree": "3" * 40}
+        open_sc_notices = {path: digest for path, digest in release.NOTICE_HASHES.items()
+                           if path.name.startswith("OpenSC-")}
+        notice = self.root / release.HOST_RESOURCES / "LICENSES/OpenSC-resource.md"
+        licence = self.root / release.HOST_RESOURCES / "LICENSES/OpenSC-LGPL-2.1.txt"
+        with patch.dict(release.NOTICE_HASHES, open_sc_notices, clear=True):
+            release.add_notices(source, self.root, identity)
+            self.assertTrue(notice.is_file())
+            self.assertTrue(licence.is_file())
+            release.verify_notices(self.root, release.inventory(self.root), identity)
+            notice.write_bytes(b"changed notice")
+            with self.assertRaisesRegex(release.ReleaseError, "notice differs"):
+                release.verify_notices(self.root, release.inventory(self.root), identity)
 
     def test_source_rejects_dirty_checkout_and_revision_mismatch(self):
         def git(*args):
@@ -219,8 +480,8 @@ class ReleaseTests(unittest.TestCase):
         for path in (license_path, notice_path, source_path):
             (self.root / path).parent.mkdir(parents=True, exist_ok=True)
             (self.root / path).write_text("placeholder")
-        contents = {license_path: {"sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"},
-                    notice_path: {"sha256": "5217a4b4d17dfc3fd3243fdbc53d2af19e4ecd1d770725b79e1d98429c4e85c2"}}
+        contents = {(release.HOST_RESOURCES / path).as_posix(): {"sha256": digest}
+                    for path, digest in release.NOTICE_HASHES.items()}
         (self.root / source_path).write_text(json.dumps(reference))
         release.verify_notices(self.root, contents, identity)
         (self.root / source_path).write_text(json.dumps({**reference, "tree": "0" * 40}))
@@ -340,10 +601,10 @@ class ReleaseTests(unittest.TestCase):
         safe = unsafe / "parent"
         safe.mkdir(parents=True)
         output = safe / "release"
-        release.validate_output_parent(output)
+        release.validate_output_parent(output, self.checkout)
         unsafe.chmod(0o777)
         with self.assertRaises(release.ReleaseError):
-            release.validate_output_parent(output)
+            release.validate_output_parent(output, self.checkout)
         self.assertFalse(output.exists())
 
     def test_raw_archive_accounts_for_bom_and_rejects_malformed_metadata(self):
