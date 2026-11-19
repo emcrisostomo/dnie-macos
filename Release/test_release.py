@@ -25,6 +25,101 @@ class ReleaseTests(unittest.TestCase):
         self.root = Path(tmp.name).resolve()
         self.checkout = Path(release.__file__).resolve().parents[1]
 
+    @unittest.skipUnless(sys.platform == "darwin", "requires the macOS ACL implementation")
+    def test_diagnostic_rejects_temporary_parent_acl_before_allocating_or_building(self):
+        parent = self.root / "temp-parent"
+        parent.mkdir(mode=0o700)
+        subprocess.run(("/bin/chmod", "+a", "everyone allow search,directory_inherit", parent),
+                       check=True, capture_output=True)
+        with patch.object(release, "RELEASE_WORK_PARENT", parent, create=True), \
+                patch.object(release.tempfile, "TemporaryDirectory", wraps=tempfile.TemporaryDirectory) as allocate, \
+                patch.object(release, "build_payload", side_effect=AssertionError("build started")) as build:
+            with self.assertRaisesRegex(release.ReleaseError, "ACL"):
+                release.diagnostic_build(self.checkout, {}, b"", self.root, repeat=False)
+        allocate.assert_not_called()
+        build.assert_not_called()
+        self.assertEqual(list(parent.iterdir()), [])
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires the macOS ACL implementation")
+    def test_release_removes_new_temporary_root_with_acl_before_signing_or_building(self):
+        created = []
+        allocate = tempfile.TemporaryDirectory
+
+        def allocate_with_acl(*args, **kwargs):
+            temporary = allocate(*args, **kwargs)
+            path = Path(temporary.name)
+            subprocess.run(("/bin/chmod", "+a", "everyone allow search", path),
+                           check=True, capture_output=True)
+            created.append(path)
+            return temporary
+
+        with patch.object(release, "RELEASE_WORK_PARENT", self.root, create=True), \
+                patch.object(release.tempfile, "TemporaryDirectory", side_effect=allocate_with_acl), \
+                patch.object(release, "signing_identities", return_value=("app", "pkg")) as lookup, \
+                patch.object(release, "build_payload", side_effect=AssertionError("build started")) as build, \
+                patch.object(release, "sign_application", side_effect=AssertionError("signing started")) as sign:
+            with self.assertRaisesRegex(release.ReleaseError, "ACL"):
+                release.start_release(self.checkout, {}, b"", self.root, {"fixture_sha256": "0" * 64},
+                                      "1" * 64, b"synthetic")
+        lookup.assert_not_called()
+        build.assert_not_called()
+        sign.assert_not_called()
+        self.assertEqual(len(created), 1)
+        self.assertFalse(created[0].exists())
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires the macOS ACL implementation")
+    def test_build_and_expansion_reject_caller_supplied_untrusted_work_roots(self):
+        shared = self.root / "shared"
+        shared.mkdir(mode=0o755)
+        acl = self.root / "acl"
+        acl.mkdir(mode=0o700)
+        subprocess.run(("/bin/chmod", "+a", "everyone allow search", acl), check=True, capture_output=True)
+        with patch.object(release, "export_source", side_effect=AssertionError("source exported")) as export, \
+                patch.object(release, "stage_credential", side_effect=AssertionError("credential staged")) as stage, \
+                patch.object(release, "verify_installer_signature",
+                             side_effect=AssertionError("signature checked")) as verify, \
+                patch.object(release, "command", side_effect=AssertionError("tool started")) as command:
+            for work, message in ((shared, "0700"), (acl, "ACL")):
+                with self.subTest(work=work.name), self.assertRaisesRegex(release.ReleaseError, message):
+                    release.build_payload(self.checkout, {"revision": "0" * 40}, b"", work, b"synthetic")
+                with self.subTest(work=work.name), self.assertRaisesRegex(release.ReleaseError, message):
+                    release.inspect_package(self.root / "package.pkg", work, {}, fixture_hash="0" * 64, auth={})
+        self.assertEqual(list(shared.iterdir()), [])
+        self.assertEqual(list(acl.iterdir()), [])
+        for tool in (export, stage, verify, command):
+            tool.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires the macOS ACL implementation")
+    def test_staple_rejects_output_parent_acl_after_private_preflight_cleanup(self):
+        output = self.root / "output"
+        output.mkdir(mode=0o700)
+        subprocess.run(("/bin/chmod", "+a", "everyone allow search,directory_inherit", output),
+                       check=True, capture_output=True)
+        preflight_roots = []
+
+        def inspect_preflight(_artifact, work, _identity, **_kwargs):
+            info = work.stat()
+            self.assertEqual(info.st_uid, os.getuid())
+            self.assertEqual(info.st_mode & 0o777, 0o700)
+            preflight_roots.append(work)
+            return {}
+
+        auth = {"fixture_sha256": "0" * 64, "notary_profile": "synthetic"}
+        binding = {"payload_sha256": release.inventory_digest({})}
+        with patch.object(release, "RELEASE_WORK_PARENT", self.root), \
+                patch.object(release, "load_binding", return_value=binding), \
+                patch.object(release, "inspect_package", side_effect=inspect_preflight), \
+                patch.object(release, "notarize"), patch.object(release.shutil, "copyfile") as copy, \
+                patch.object(release, "command") as command:
+            with self.assertRaisesRegex(release.ReleaseError, "ACL"):
+                release.finalize_release({}, output, auth, "1" * 64)
+        copy.assert_not_called()
+        command.assert_not_called()
+        self.assertEqual(len(preflight_roots), 1)
+        self.assertFalse(preflight_roots[0].exists())
+        self.assertEqual(list(output.iterdir()), [])
+
     def test_unrecognized_opensc_source_is_rejected_before_writing(self):
         source = self.root / "source.c"
         source.write_bytes(b"synthetic source contents")

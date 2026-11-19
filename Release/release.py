@@ -2,6 +2,7 @@
 """Build and verify the pinned arm64 macOS component package."""
 
 import argparse
+from contextlib import contextmanager
 import ctypes
 import errno
 import fcntl
@@ -74,6 +75,7 @@ NOTARY_STATE = "notary-state.json"
 SUBMISSION = "submission.pkg"
 SIGNED_PACKAGE = "DNIeToken.pkg"
 DIAGNOSTIC_PACKAGE = "DNIeToken-diagnostic-unsigned.pkg"
+RELEASE_WORK_PARENT = Path("/private/tmp")
 
 
 def sha256(data):
@@ -290,6 +292,26 @@ def open_safe_directory(path, *, excluded=None):
     except BaseException:
         os.close(directory)
         raise
+
+
+def validate_private_work_directory(work):
+    directory = open_safe_directory(work)
+    try:
+        info = os.fstat(directory)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ReleaseError("Release work directory must be owned by the invoking user and mode 0700.")
+    finally:
+        os.close(directory)
+
+
+@contextmanager
+def private_work_directory(prefix, *, parent=None):
+    parent = canonical(RELEASE_WORK_PARENT if parent is None else parent)
+    os.close(open_safe_directory(parent))
+    with tempfile.TemporaryDirectory(prefix=prefix, dir=parent) as temp:
+        work = Path(temp)
+        validate_private_work_directory(work)
+        yield work
 
 
 def open_output_parent(output, root):
@@ -725,6 +747,7 @@ def stage_credential(source, work, data, env):
 
 
 def build_payload(root, identity, tree, work, credential_data=None):
+    validate_private_work_directory(work)
     source = work / "source"
     export_source(root, identity["revision"], tree, source)
     env = build_environment(work)
@@ -949,6 +972,7 @@ def check_expanded_archive(root, contents, digests, attrs, run=command):
 
 
 def inspect_package(path, work, identity, *, fixture_hash=None, auth=None):
+    validate_private_work_directory(work)
     if auth is not None:
         verify_installer_signature(path, auth)
     raw = work / "raw-package"
@@ -1140,10 +1164,9 @@ def check_ticket(path):
 
 
 def diagnostic_build(root, identity, tree, output, repeat):
-    with tempfile.TemporaryDirectory(prefix="dnie-unsigned-", dir="/private/tmp") as temp:
-        work = Path(temp).resolve()
+    with private_work_directory("dnie-unsigned-") as work:
         first = work / "run-a"
-        first.mkdir()
+        first.mkdir(mode=0o700)
         payload = build_payload(root, identity, tree, first)
         built = check_payload(payload, identity)
         artifact = output / DIAGNOSTIC_PACKAGE
@@ -1162,7 +1185,7 @@ def diagnostic_build(root, identity, tree, output, repeat):
             # Swift 6.4.2 emits the absolute source-path length in a generated diagnostic
             # check even with debug information disabled. Keep run directory lengths equal.
             second = work / "run-b"
-            second.mkdir()
+            second.mkdir(mode=0o700)
             other = build_payload(root, identity, tree, second)
             comparison = check_payload(other, identity)
             difference = first_difference(built, comparison)
@@ -1178,12 +1201,11 @@ def diagnostic_build(root, identity, tree, output, repeat):
 
 def start_release(root, identity, tree, output, auth, auth_digest, fixture):
     fixture_digest = auth["fixture_sha256"]
-    app_identity, installer = signing_identities(auth)
-    with tempfile.TemporaryDirectory(prefix="dnie-authorized-release-", dir="/private/tmp") as temp:
-        work = Path(temp).resolve()
+    with private_work_directory("dnie-authorized-release-") as work:
+        app_identity, installer = signing_identities(auth)
         first, second = work / "run-a", work / "run-b"
-        first.mkdir()
-        second.mkdir()
+        first.mkdir(mode=0o700)
+        second.mkdir(mode=0o700)
         payload = build_payload(root, identity, tree, first, fixture)
         unsigned = check_payload(payload, identity, fixture_hash=fixture_digest)
         other = build_payload(root, identity, tree, second, fixture)
@@ -1227,14 +1249,12 @@ def finalize_release(identity, output, auth, auth_digest, *, resume=False):
     binding = load_binding(output, identity, auth_digest)
     artifact = output / SUBMISSION
     # Require signature and exact contents again before a first upload or interrupted resume.
-    with tempfile.TemporaryDirectory(prefix="dnie-release-preflight-", dir="/private/tmp") as temp:
-        work = Path(temp).resolve()
+    with private_work_directory("dnie-release-preflight-") as work:
         contents = inspect_package(artifact, work, identity, fixture_hash=auth["fixture_sha256"], auth=auth)
         if inventory_digest(contents) != binding.get("payload_sha256"):
             raise ReleaseError("Signed package payload differs from the inspected submission.")
     notarize(output, artifact, auth["notary_profile"], resume=resume)
-    with tempfile.TemporaryDirectory(prefix=".staple-", dir=output) as temp:
-        work = Path(temp).resolve()
+    with private_work_directory(".staple-", parent=output) as work:
         candidate = work / SIGNED_PACKAGE
         shutil.copyfile(artifact, candidate)
         candidate.chmod(0o600)
@@ -1324,8 +1344,8 @@ def verify_output(output, identity, args):
         raise ReleaseError("Output manifest kind is unknown.")
     if private_artifact_hash(artifact) != manifest.get("package_sha256"):
         raise ReleaseError("Package digest differs from the output manifest.")
-    with tempfile.TemporaryDirectory(prefix="dnie-verify-", dir="/private/tmp") as temp:
-        contents = inspect_package(artifact, Path(temp).resolve(), identity, fixture_hash=fixture_hash, auth=auth)
+    with private_work_directory("dnie-verify-") as work:
+        contents = inspect_package(artifact, work, identity, fixture_hash=fixture_hash, auth=auth)
         if inventory_digest(contents) != manifest.get("payload_sha256"):
             raise ReleaseError("Package payload digest differs from the output manifest.")
     if auth is not None:
