@@ -20,6 +20,9 @@ credential_format = release.credential_transform()
 
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
+        # Mode assertions need deterministic permissions on synthetic fixtures.
+        original_umask = os.umask(0o022)
+        self.addCleanup(os.umask, original_umask)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name).resolve()
