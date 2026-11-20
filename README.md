@@ -37,7 +37,9 @@ Signed installer distribution and installation on a clean Mac are still being va
 - Full Xcode with a macOS 26 or later SDK and Swift 6.2 or later. Select it as the active
   command-line developer directory.
 - Python 3.9 or later, `jq`, and the macOS-provided Make.
-- An Apple Development signing identity in your Keychain.
+- An Apple Development signing identity in your Keychain. See Apple’s
+  [signing identity setup instructions](https://developer.apple.com/documentation/xcode/sharing-your-teams-signing-certificates); in Xcode’s
+  certificate manager, choose **Apple Development**.
 
 A supported USB CCID reader and a DNIe are needed to use the built app, but not to
 run the offline checks.
@@ -55,31 +57,10 @@ The build needs generation-2 terminal data derived from OpenSC. This is shared p
 data, distinct from your DNIe PIN and the private keys held by your card. Its values are
 not stored in this repository.
 
-The preparation command automatically downloads and verifies the pinned OpenSC
-source and licence. Separately obtain the DGP ARM middleware library described in the
-[resource preparation guide](Release/README.md#prepare-or-rebuild-the-generation-2-resource),
-then replace the library path below with its absolute path:
-
-```sh
-(
-  set -eu
-  resource_dir="$(mktemp -d /private/tmp/dnie-resource.XXXXXXXX)"
-  DNIERELEASE_OFFICIAL_BINARY="/path/to/extracted-arm64-library" \
-  DNIERELEASE_FIXTURE="$resource_dir/generation2.json" make release-prepare
-
-  mkdir -p -m 700 Validation/private/SecureChannel
-  install -m 600 "$resource_dir/generation2.json" \
-    Validation/private/SecureChannel/generation2.json
-
-  rm "$resource_dir/generation2.json"
-  rmdir "$resource_dir"
-)
-```
-
-Preparation requires direct HTTPS access to GitHub and verifies all inputs before writing
-the local resource. The release guide also documents an offline override.
-After a successful copy, the commands remove the temporary file and its scratch directory.
-Keep the local resource out of version control. Its destination above is Git-ignored.
+Follow the [download and preparation commands](Release/README.md#download-and-prepare-for-a-development-build).
+They download and verify the DGP ARM package, extract its library without installing
+middleware, fetch the pinned OpenSC inputs, and create the local resource. No input
+path edits are needed. The guide also covers offline preparation.
 
 ### 3. Build
 

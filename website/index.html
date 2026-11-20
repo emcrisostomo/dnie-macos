@@ -119,7 +119,7 @@
                 <li>Apple silicon and macOS 26 or later</li>
                 <li>Full Xcode with a macOS 26 or later SDK and Swift 6.2 or later. Select it as the active command-line developer directory.</li>
                 <li>Python 3.9 or later, <code>jq</code>, and the macOS-provided Make</li>
-                <li>An Apple Development signing identity in your Keychain</li>
+                <li>An Apple Development signing identity in your Keychain. Follow <a href="https://developer.apple.com/documentation/xcode/sharing-your-teams-signing-certificates">Apple’s signing identity setup instructions</a> and choose Apple Development.</li>
               </ul>
               <p>Using the built app also requires a supported USB CCID reader and a DNIe 4.0.</p>
             </div>
@@ -133,21 +133,8 @@ cd dnie-macos</code></pre>
             </li>
             <li>
               <h3>Prepare the terminal data</h3>
-              <p>The build uses shared generation-2 protocol data distinct from your card’s PIN and private keys. The preparation command automatically downloads and verifies the pinned OpenSC source and licence. Separately obtain the DGP ARM middleware library identified in the <a href="https://github.com/emcrisostomo/dnie-macos/blob/main/Release/README.md#prepare-or-rebuild-the-generation-2-resource">release guide</a>.</p>
-              <p>Replace the library placeholder with its absolute path. Preparation requires direct HTTPS access to GitHub; the guide also documents an offline override. The verified resource is written locally. Keep the resource in the Git-ignored location below. After a successful copy, the commands remove the temporary file and its scratch directory.</p>
-              <pre><code>(
-  set -eu
-  resource_dir="$(mktemp -d /private/tmp/dnie-resource.XXXXXXXX)"
-  DNIERELEASE_OFFICIAL_BINARY="/path/to/extracted-arm64-library" \
-  DNIERELEASE_FIXTURE="$resource_dir/generation2.json" make release-prepare
-
-  mkdir -p -m 700 Validation/private/SecureChannel
-  install -m 600 "$resource_dir/generation2.json" \
-    Validation/private/SecureChannel/generation2.json
-
-  rm "$resource_dir/generation2.json"
-  rmdir "$resource_dir"
-)</code></pre>
+              <p>The build uses shared generation-2 protocol data distinct from your card’s PIN and private keys. Follow the <a href="https://github.com/emcrisostomo/dnie-macos/blob/main/Release/README.md#download-and-prepare-for-a-development-build">download and preparation commands</a> to obtain and verify the DGP ARM package, extract its library without installing middleware, and fetch the pinned OpenSC inputs.</p>
+              <p>The commands create the resource locally in its Git-ignored location, with no input path edits. The guide also documents offline preparation.</p>
             </li>
             <li>
               <h3>Build the app</h3>

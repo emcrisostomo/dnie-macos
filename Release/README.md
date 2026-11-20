@@ -52,10 +52,65 @@ SHA-256 hashes before using the data. Downloads require direct HTTPS access to
 `raw.githubusercontent.com`; no GitHub account, token or OpenSC checkout is needed. The files stay in memory and are never executed or
 cached in the repository. Download or integrity failures stop preparation.
 
-Separately obtain the ARM64 PKCS#11 library from DGP's macOS ARM middleware 1.6.8.
-It remains an independently supplied input: this command does not download,
-install or execute DGP middleware. The exact library hash, OpenSC source pin
-and licence election are in the [resource notice](../LICENSES/OpenSC-resource.md).
+### Download and prepare for a development build
+
+Run the following from the repository root as your normal user. It downloads the
+**1.6.8 ARM package** from the [official DGP macOS download page](https://www.dnielectronico.es/PortalDNIe/PRF1_Cons02.action?pag=REF_1113),
+checks the package and library SHA-256 pins, and extracts the library with macOS
+`pkgutil`. It does not run the installer, its scripts or the library. Then it fetches
+the OpenSC inputs and prepares the resource in the Git-ignored development location.
+No input path edits are needed. The commands require direct HTTPS access to the
+DGP website and `raw.githubusercontent.com`, and use macOS-provided `curl`,
+`pkgutil`, `shasum` and `install`, plus the prerequisites in the project README.
+
+```sh
+(
+  set -eu
+  umask 077
+  fixture="Validation/private/SecureChannel/generation2.json"
+  if [ -e "$fixture" ] || [ -L "$fixture" ]; then
+    printf '%s\n' 'A local resource already exists; keep it or review it before preparing another.' >&2
+    exit 1
+  fi
+  scratch="$(mktemp -d /private/tmp/dnie-inputs.XXXXXXXX)"
+  trap 'rm -rf "$scratch"' EXIT
+
+  /usr/bin/curl --fail --show-error --silent --location \
+    --proto '=https' --proto-redir '=https' \
+    --connect-timeout 15 --max-time 120 \
+    --output "$scratch/dgp.pkg" \
+    'https://www.dnielectronico.es/descargas/software_MACOS/libpkcs11-dnie-1.6.8_arm.pkg'
+  printf '%s  %s\n' \
+    '1eb6ef2117953ff787f8a6da6f26c2e9523ebcc2d91ad991c5350a8faab521ed' \
+    "$scratch/dgp.pkg" | /usr/bin/shasum -a 256 -c -
+
+  /usr/sbin/pkgutil --expand-full "$scratch/dgp.pkg" "$scratch/expanded"
+  library="$scratch/expanded/Payload/Libpkcs11-dnie/lib/libpkcs11-dnie.so"
+  test -f "$library" && test ! -L "$library"
+  printf '%s  %s\n' \
+    'd2de4308190433a22683ef7fa85637b446f2a9420e35e50b86314a5590c46bc2' \
+    "$library" | /usr/bin/shasum -a 256 -c -
+  /usr/bin/install -m 600 "$library" "$scratch/dgp-library"
+
+  unset DNIERELEASE_OPENSC_SOURCE
+  DNIERELEASE_OFFICIAL_BINARY="$scratch/dgp-library" \
+  DNIERELEASE_FIXTURE="$scratch/generation2.json" make release-prepare
+  mkdir -p -m 700 Validation/private/SecureChannel
+  /usr/bin/install -m 600 "$scratch/generation2.json" "$fixture"
+)
+```
+
+On success, only `Validation/private/SecureChannel/generation2.json` is retained,
+with mode `0600`; downloads and extracted middleware are removed on success or
+failure. Keep the resource out of version control. If a download or checksum fails,
+stop and check the official download page; do not substitute another version or
+remove the integrity checks. A rerun starts with a fresh scratch directory.
+
+### Prepare a separate release input
+
+Operators with an independently obtained library can prepare an external resource
+instead. The supported input is the ARM64 PKCS#11 library from DGP macOS middleware
+1.6.8, with the exact hash in the [resource notice](../LICENSES/OpenSC-resource.md).
 
 ```sh
 credential_parent="$(mktemp -d /private/tmp/dnie-credential.XXXXXXXX)"
@@ -64,16 +119,14 @@ export DNIERELEASE_FIXTURE="$credential_parent/generation2.json"
 make release-prepare
 ```
 
-This validates the downloaded source and licence, the DGP library hash, the presence
-of all 18 generation-2 fields in that library and their ordered manifest. It writes
-the same deterministic fixture format
-used by the runtime verifier. The local DGP library and any offline source override
-must be owner-controlled, unlinked regular files with canonical paths. The output
-must be absent under an existing owner-only directory with
-mode `0700` outside the checkout. The completed file has mode `0600`.
-The macOS custody checks reject ACL entries that could grant access on these files
-or their directory ancestors. Keep the inputs and outputs outside Git.
-Only categorical results are printed.
+Preparation verifies the DGP library hash, the presence of all 18 generation-2
+fields in that library and their ordered manifest. It writes the deterministic
+fixture format used by the runtime verifier. The local DGP library and any offline
+source override must be owner-controlled, unlinked regular files with canonical
+paths. The output must be absent under an existing owner-only directory with mode
+`0700` outside the checkout. The completed file has mode `0600`. The macOS custody
+checks reject ACL entries that could grant access on these files or their directory
+ancestors. Only categorical results are printed. Keep all inputs and outputs out of Git.
 
 ### Offline preparation
 
