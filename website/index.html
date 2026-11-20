@@ -133,8 +133,9 @@ cd dnie-macos</code></pre>
             </li>
             <li>
               <h3>Prepare the terminal data</h3>
-              <p>The build uses shared generation-2 protocol data distinct from your card’s PIN and private keys. Follow the <a href="https://github.com/emcrisostomo/dnie-macos/blob/main/Release/README.md#download-and-prepare-for-a-development-build">download and preparation commands</a> to obtain and verify the DGP ARM package, extract its library without installing middleware, and fetch the pinned OpenSC inputs.</p>
-              <p>The commands create the resource locally in its Git-ignored location, with no input path edits. The guide also documents offline preparation.</p>
+              <p>The build uses shared generation-2 protocol data distinct from your card’s PIN and private keys.</p>
+              <pre><code>make prepare</code></pre>
+              <p>This downloads and verifies the DGP ARM package and OpenSC inputs, then creates the local resource in its Git-ignored location. It extracts the DGP library without installing middleware and reuses valid existing data. See the <a href="https://github.com/emcrisostomo/dnie-macos/blob/main/Release/README.md#download-and-prepare-for-a-development-build">preparation guide</a> for prerequisites and offline inputs.</p>
             </li>
             <li>
               <h3>Build the app</h3>

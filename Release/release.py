@@ -59,7 +59,11 @@ NOTICE_HASHES = {
 OPENSC_REVISION = "bc9a74a44565c091fc473d87193ec3a35c55b1f0"
 OPENSC_SOURCE_SIZE = 54_208
 OPENSC_COPYING_SIZE = 26_522
-OPENSC_TIMEOUT = 15
+DGP_PACKAGE_SIZE = 2_825_440
+DGP_PACKAGE_SHA256 = "1eb6ef2117953ff787f8a6da6f26c2e9523ebcc2d91ad991c5350a8faab521ed"
+DGP_LIBRARY_SIZE = 517_182
+DGP_LIBRARY = Path("Payload/Libpkcs11-dnie/lib/libpkcs11-dnie.so")
+HTTPS_TIMEOUT = 15
 PUBLIC_REPOSITORY = "https://github.com/emcrisostomo/dnie-macos"
 STAGE_SCRIPT = Path("Validation/Scripts/stage-production-credential-asset.sh")
 CREDENTIAL_SOURCE = Path("Validation/private/SecureChannel/generation2.json")
@@ -351,20 +355,37 @@ def open_regular(path, mode):
     path = canonical(path)
     directory = open_safe_directory(path.parent)
     try:
-        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        return open_private_file(directory, path.name, mode)
     finally:
         os.close(directory)
+
+
+def open_private_file(directory, name, mode):
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
     stream = os.fdopen(fd, "rb")
     try:
-        info = os.fstat(stream.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != mode):
-            raise ReleaseError("Private file must be owned by the invoking user, mode 0600 and unlinked.")
-        require_safe_acl(stream.fileno())
+        validate_private_file(fd, mode)
     except BaseException:
         stream.close()
         raise
     return stream
+
+
+def validate_private_file(fd, mode):
+    info = os.fstat(fd)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != mode):
+        raise ReleaseError("Private file must be owned by the invoking user, mode 0600 and unlinked.")
+    require_safe_acl(fd)
+    return info
+
+
+def bounded_private_data(stream):
+    data = stream.read(65_537)
+    if not data or len(data) > 65_536:
+        raise ReleaseError("Private input size is outside the supported range.")
+    return data
+
 
 def read_private(path):
     try:
@@ -373,12 +394,9 @@ def read_private(path):
         if parent.st_uid != os.getuid() or parent.st_mode & 0o022:
             raise ReleaseError("Private input directory is writable by another account.")
         with open_regular(path, 0o600) as stream:
-            data = stream.read(65_537)
+            return bounded_private_data(stream)
     except OSError:
         raise ReleaseError("Private input could not be read safely.") from None
-    if not data or len(data) > 65_536:
-        raise ReleaseError("Private input size is outside the supported range.")
-    return data
 
 
 def read_preparation_input(path, limit, label):
@@ -403,56 +421,85 @@ def read_preparation_input(path, limit, label):
     return data
 
 
-def fetch_opensc_inputs() -> tuple[bytes, bytes]:
-    """Fetch and verify the pinned source and licence in memory over direct HTTPS."""
+def verified_tls(label):
     try:
         # Use standard certificate and hostname verification without TLS key logging.
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         tls.load_default_certs()
     except OSError:
-        raise ReleaseError("OpenSC TLS trust could not be initialized.") from None
+        raise ReleaseError(f"{label} TLS trust could not be initialized.") from None
+    return tls
 
-    def fetch(path, size, digest, label):
-        try:
-            # Direct egress avoids environment proxies, credentials and redirect handling.
-            with closing(http.client.HTTPSConnection("raw.githubusercontent.com",
-                                                     timeout=OPENSC_TIMEOUT, context=tls)) as connection:
-                connection.request("GET", f"/OpenSC/OpenSC/{OPENSC_REVISION}/{path}")
-                with connection.getresponse() as response:
-                    if 300 <= response.status < 400:
-                        raise ReleaseError(f"{label} download received a redirect.")
-                    if response.status != 200:
-                        raise ReleaseError(f"{label} download failed with an unexpected HTTP status.")
-                    data = response.read(size + 1)
-        except (TimeoutError, socket.timeout):
-            raise ReleaseError(f"{label} download timed out.") from None
-        except ssl.SSLError:
-            raise ReleaseError(f"{label} download failed TLS verification or negotiation.") from None
-        except (OSError, http.client.HTTPException):
-            raise ReleaseError(f"{label} download failed at the transport boundary.") from None
-        if len(data) != size:
-            raise ReleaseError(f"{label} download size does not match the reviewed pin.")
-        if sha256(data) != digest:
-            raise ReleaseError(f"{label} download hash does not match the reviewed pin.")
-        return data
 
-    source = fetch("src/libopensc/cwa-dnie.c", OPENSC_SOURCE_SIZE,
-                   credential_transform().SOURCE_SHA256, "OpenSC source")
-    copying = fetch("COPYING", OPENSC_COPYING_SIZE,
-                    NOTICE_HASHES[Path("LICENSES/OpenSC-LGPL-2.1.txt")], "OpenSC COPYING")
+def fetch_pinned_https(host, path, size, digest, label, *, tls):
+    try:
+        # Direct egress avoids environment proxies, credentials and redirect handling.
+        with closing(http.client.HTTPSConnection(host, timeout=HTTPS_TIMEOUT, context=tls)) as connection:
+            connection.request("GET", path)
+            with connection.getresponse() as response:
+                if 300 <= response.status < 400:
+                    raise ReleaseError(f"{label} download received a redirect.")
+                if response.status != 200:
+                    raise ReleaseError(f"{label} download failed with an unexpected HTTP status.")
+                data = response.read(size + 1)
+    except (TimeoutError, socket.timeout):
+        raise ReleaseError(f"{label} download timed out.") from None
+    except ssl.SSLError:
+        raise ReleaseError(f"{label} download failed TLS verification or negotiation.") from None
+    except (OSError, http.client.HTTPException):
+        raise ReleaseError(f"{label} download failed at the transport boundary.") from None
+    if len(data) != size:
+        raise ReleaseError(f"{label} download size does not match the reviewed pin.")
+    if sha256(data) != digest:
+        raise ReleaseError(f"{label} download hash does not match the reviewed pin.")
+    return data
+
+
+def fetch_opensc_inputs() -> tuple[bytes, bytes]:
+    """Fetch and verify the pinned source and licence in memory over direct HTTPS."""
+    tls = verified_tls("OpenSC")
+    host = "raw.githubusercontent.com"
+    upstream = f"/OpenSC/OpenSC/{OPENSC_REVISION}"
+    source = fetch_pinned_https(host, f"{upstream}/src/libopensc/cwa-dnie.c", OPENSC_SOURCE_SIZE,
+                               credential_transform().SOURCE_SHA256, "OpenSC source", tls=tls)
+    copying = fetch_pinned_https(host, f"{upstream}/COPYING", OPENSC_COPYING_SIZE,
+                                NOTICE_HASHES[Path("LICENSES/OpenSC-LGPL-2.1.txt")], "OpenSC COPYING", tls=tls)
     return source, copying
 
 
-def credential_bytes(source, official_binary):
+def fetch_dgp_binary():
+    package = fetch_pinned_https(
+        "www.dnielectronico.es", "/descargas/software_MACOS/libpkcs11-dnie-1.6.8_arm.pkg",
+        DGP_PACKAGE_SIZE, DGP_PACKAGE_SHA256, "DGP package", tls=verified_tls("DGP package"))
+    with private_work_directory("dnie-development-") as work:
+        archive = work / "dgp.pkg"
+        expanded = work / "expanded"
+        write_bytes(archive, package)
+        command(("/usr/sbin/pkgutil", "--expand-full", archive, expanded),
+                label="DGP package expansion", cwd=work, env={"TMPDIR": str(work)})
+        library = read_preparation_input(expanded / DGP_LIBRARY, DGP_LIBRARY_SIZE, "DGP library")
+        if len(library) != DGP_LIBRARY_SIZE:
+            raise ReleaseError("DGP library size does not match the reviewed pin.")
+        if sha256(library) != credential_transform().OFFICIAL_BINARY_SHA256:
+            raise ReleaseError("Pinned official DGP library hash mismatch.")
+        return library
+
+
+def credential_bytes(source, official_binary, *, download_official=False):
     credential_format = credential_transform()
     try:
         if source is not None:
             data = read_preparation_input(source, SOURCE_LIMIT, "Credential source input")
-            if official_binary is None:
+            if official_binary is None and not download_official:
                 return credential_format.fixture_from_excerpt(data)
-        if official_binary is None:
+        if official_binary is not None:
+            official = read_preparation_input(official_binary, OFFICIAL_BINARY_LIMIT, "DGP binary input")
+        elif download_official:
+            if source is not None:
+                credential_format.verify_upstream_source(data)
+            official = fetch_dgp_binary()
+        else:
             raise ReleaseError("Provide the independently obtained DGP binary input.")
-        official = read_preparation_input(official_binary, OFFICIAL_BINARY_LIMIT, "DGP binary input")
         if source is None:
             if sha256(official) != credential_format.OFFICIAL_BINARY_SHA256:
                 raise ReleaseError("Pinned official DGP binary hash mismatch.")
@@ -492,20 +539,9 @@ def open_credential_output_parent(output, root):
         raise
 
 
-def prepare_credential(source, official_binary, output, root):
-    directory = open_credential_output_parent(output, root)
+def publish_credential(directory, name, data, *, recheck=None):
+    pending = f".credential-{uuid.uuid4().hex}"
     try:
-        data = credential_bytes(source, official_binary)
-        if source is None:
-            # The network delay gives the output path time to change. Keep the original binding
-            # and recheck owner, mode, ACLs and checkout exclusion on the path before writing.
-            checked = open_credential_output_parent(output, root)
-            try:
-                if not os.path.samestat(os.fstat(directory), os.fstat(checked)):
-                    raise ReleaseError("Credential output directory changed during acquisition.")
-            finally:
-                os.close(checked)
-        pending = f".credential-{uuid.uuid4().hex}"
         fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      mode=0o600, dir_fd=directory)
         try:
@@ -515,8 +551,10 @@ def prepare_credential(source, official_binary, output, root):
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
+            if recheck is not None:
+                recheck()
             # Publish atomically without replacing a file that appeared during preparation.
-            os.link(pending, output.name, src_dir_fd=directory, dst_dir_fd=directory,
+            os.link(pending, name, src_dir_fd=directory, dst_dir_fd=directory,
                     follow_symlinks=False)
         finally:
             os.unlink(pending, dir_fd=directory)
@@ -524,8 +562,104 @@ def prepare_credential(source, official_binary, output, root):
         raise ReleaseError("Credential output already exists. Choose an absent file.") from None
     except OSError:
         raise ReleaseError("Credential output could not be written safely.") from None
+
+
+def require_unchanged_directory(directory, checked):
+    try:
+        if not os.path.samestat(os.fstat(directory), os.fstat(checked)):
+            raise ReleaseError("Credential output directory changed during acquisition.")
+    finally:
+        os.close(checked)
+
+
+def prepare_credential(source, official_binary, output, root):
+    directory = open_credential_output_parent(output, root)
+    try:
+        data = credential_bytes(source, official_binary)
+        if source is None:
+            # Keep the original binding across the network delay and recheck custody.
+            require_unchanged_directory(directory, open_credential_output_parent(output, root))
+        publish_credential(directory, output.name, data)
     finally:
         os.close(directory)
+
+
+def open_development_output_parent(root, *, create=False):
+    # Only the two fixed private directories may be created inside this checkout.
+    validation, *private_dirs = CREDENTIAL_SOURCE.parent.parts
+    directory = open_safe_directory(root / validation)
+    try:
+        checkout = os.fsdecode(git(root, "rev-parse", "--show-toplevel", binary=True).removesuffix(b"\n"))
+        if Path(checkout) != root:
+            raise ReleaseError("Development preparation must use its source checkout.")
+        try:
+            for path in (CREDENTIAL_SOURCE.parent, CREDENTIAL_SOURCE):
+                git(root, "check-ignore", "--quiet", "--", str(path))
+        except ReleaseError:
+            raise ReleaseError("Development fixture and its directory must be Git-ignored and untracked.") from None
+        directory_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
+        for part in private_dirs:
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=directory)
+                except FileExistsError:
+                    pass
+            nested = os.open(part, directory_flags, dir_fd=directory)
+            os.close(directory)
+            directory = nested
+            info = os.fstat(directory)
+            if info.st_uid != os.getuid() or info.st_mode & 0o7022:
+                raise ReleaseError("Development fixture directories must be owner-controlled and non-shared-writable.")
+            require_safe_acl(directory)
+        return directory
+    except BaseException:
+        os.close(directory)
+        raise
+
+
+def fixture_file_state(info):
+    # Reading can change access time. Include ctime to catch writes that restore mtime.
+    return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def prepare_development(source, official_binary, root):
+    try:
+        directory = open_development_output_parent(root, create=True)
+        try:
+            def recheck_output():
+                require_unchanged_directory(directory, open_development_output_parent(root))
+
+            name = CREDENTIAL_SOURCE.name
+            try:
+                existing = open_private_file(directory, name, 0o600)
+            except FileNotFoundError:
+                data = credential_bytes(source, official_binary, download_official=True)
+                recheck_output()
+                publish_credential(directory, name, data, recheck=recheck_output)
+                return "Private fixture written."
+            with existing:
+                fd = existing.fileno()
+                before = fixture_file_state(os.fstat(fd))
+                formatter = credential_transform()
+                try:
+                    # Validates manifest, metadata, canonical serialization and both derived keys.
+                    formatter.source_excerpt_from_fixture(bounded_private_data(existing))
+                except formatter.CredentialFormatError as error:
+                    raise ReleaseError(str(error)) from None
+                recheck_output()
+                after = fixture_file_state(validate_private_file(fd, 0o600))
+                try:
+                    current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                except FileNotFoundError:
+                    raise ReleaseError("Development fixture changed during validation.") from None
+                if after != before or fixture_file_state(current) != before:
+                    raise ReleaseError("Development fixture changed during validation.")
+            return "Private fixture already valid."
+        finally:
+            os.close(directory)
+    except OSError:
+        raise ReleaseError("Development fixture path could not be processed safely.") from None
 
 
 def decode_record(data, label):
@@ -1428,7 +1562,10 @@ def verify_output(output, identity, args):
         raise ReleaseError("Diagnostic package checks pass, but unsigned build repeatability failed.")
 
 
-HELP = """Release packaging
+HELP = """Development preparation
+  make prepare                Prepare or validate the Git-ignored development resource
+
+Release packaging
   make release-check          Check the exact checkout and pinned toolchain
   make release-unsigned       Build and inspect a credential-free diagnostic package
   make release-repeatability  Compare two clean unsigned payloads and record the first difference
@@ -1451,7 +1588,7 @@ class ReleaseArgumentParser(argparse.ArgumentParser):
 def arguments():
     parser = ReleaseArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("help", "check", "unsigned", "repeatability", "release", "verify",
-                                              "prepare-credential", "rebuild-credential"))
+                                              "prepare-development", "prepare-credential", "rebuild-credential"))
     parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--revision", default=os.getenv("DNIERELEASE_REVISION"))
     parser.add_argument("--output", type=Path)
@@ -1475,9 +1612,16 @@ def main():
     if args.operation == "help":
         print(HELP.rstrip())
         return
-    if args.operation in ("prepare-credential", "rebuild-credential"):
+    if args.operation in ("prepare-development", "prepare-credential", "rebuild-credential"):
         if sys.platform != "darwin" or os.geteuid() == 0:
             raise ReleaseError("Run credential preparation on macOS as the invoking user without sudo.")
+        checkout = Path(__file__).resolve().parents[1]
+        if args.operation == "prepare-development":
+            if args.output is not None or args.source != checkout:
+                raise ReleaseError("Development preparation uses only the current script's checkout and fixed output.")
+            result = prepare_development(args.opensc_source, args.official_binary, checkout)
+            print(f"Development preparation passed. {result}")
+            return
         output = args.output or args.fixture
         if output is None:
             raise ReleaseError("Provide an absent private credential output file.")
@@ -1489,7 +1633,7 @@ def main():
             if args.excerpt is None:
                 raise ReleaseError("Provide the corresponding credential source excerpt.")
             source, official_binary = args.excerpt, None
-        prepare_credential(source, official_binary, output, Path(__file__).resolve().parents[1])
+        prepare_credential(source, official_binary, output, checkout)
         print("Credential preparation passed. Private fixture written.")
         return
     if sys.platform != "darwin" or os.geteuid() == 0:

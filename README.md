@@ -57,10 +57,14 @@ The build needs generation-2 terminal data derived from OpenSC. This is shared p
 data, distinct from your DNIe PIN and the private keys held by your card. Its values are
 not stored in this repository.
 
-Follow the [download and preparation commands](Release/README.md#download-and-prepare-for-a-development-build).
-They download and verify the DGP ARM package, extract its library without installing
-middleware, fetch the pinned OpenSC inputs, and create the local resource. No input
-path edits are needed. The guide also covers offline preparation.
+```sh
+make prepare
+```
+
+This downloads and verifies the DGP ARM package and OpenSC inputs, then creates the
+Git-ignored local resource. It extracts the DGP library without installing middleware.
+Valid existing data is verified and reused. See the [preparation guide](Release/README.md#download-and-prepare-for-a-development-build)
+for prerequisites and offline inputs.
 
 ### 3. Build
 

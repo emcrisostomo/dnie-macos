@@ -4,14 +4,14 @@ SHELL := /bin/zsh
 
 WORKFLOW := Validation/Product/Scripts/developer-workflow.sh
 RELEASE_GOALS := release-prepare release-rebuild release-check release-unsigned release-repeatability release release-verify release-test
-OPERATIONAL_GOALS := check build install status test upgrade uninstall disable enable clean $(RELEASE_GOALS)
+OPERATIONAL_GOALS := check prepare build install status test upgrade uninstall disable enable clean $(RELEASE_GOALS)
 REQUESTED_OPERATIONS := $(filter $(OPERATIONAL_GOALS),$(MAKECMDGOALS))
 
 ifneq ($(word 2,$(REQUESTED_OPERATIONS)),)
 $(error Request exactly one operational target per make invocation; development, lifecycle and release operations must not be combined)
 endif
 
-.PHONY: help check build install status test upgrade uninstall disable enable clean release-help $(RELEASE_GOALS)
+.PHONY: help $(OPERATIONAL_GOALS) release-help
 
 help:
 	@$(WORKFLOW) help
@@ -25,6 +25,9 @@ check:
 	@Validation/Product/Scripts/test-pilot-upgrade-root.sh
 	@Validation/Product/Scripts/test-pilot-lifecycle-privileged-static.sh
 	@Validation/Product/Scripts/test-scan-secret-logs.sh
+
+prepare:
+	@/usr/bin/python3 -B Release/release.py prepare-development
 
 build:
 	@$(WORKFLOW) build

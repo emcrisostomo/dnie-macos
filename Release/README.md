@@ -54,57 +54,43 @@ cached in the repository. Download or integrity failures stop preparation.
 
 ### Download and prepare for a development build
 
-Run the following from the repository root as your normal user. It downloads the
-**1.6.8 ARM package** from the [official DGP macOS download page](https://www.dnielectronico.es/PortalDNIe/PRF1_Cons02.action?pag=REF_1113),
-checks the package and library SHA-256 pins, and extracts the library with macOS
-`pkgutil`. It does not run the installer, its scripts or the library. Then it fetches
-the OpenSC inputs and prepares the resource in the Git-ignored development location.
-No input path edits are needed. The commands require direct HTTPS access to the
-DGP website and `raw.githubusercontent.com`, and use macOS-provided `curl`,
-`pkgutil`, `shasum` and `install`, plus the prerequisites in the project README.
+From the repository root, run:
 
 ```sh
-(
-  set -eu
-  umask 077
-  fixture="Validation/private/SecureChannel/generation2.json"
-  if [ -e "$fixture" ] || [ -L "$fixture" ]; then
-    printf '%s\n' 'A local resource already exists; keep it or review it before preparing another.' >&2
-    exit 1
-  fi
-  scratch="$(mktemp -d /private/tmp/dnie-inputs.XXXXXXXX)"
-  trap 'rm -rf "$scratch"' EXIT
-
-  /usr/bin/curl --fail --show-error --silent --location \
-    --proto '=https' --proto-redir '=https' \
-    --connect-timeout 15 --max-time 120 \
-    --output "$scratch/dgp.pkg" \
-    'https://www.dnielectronico.es/descargas/software_MACOS/libpkcs11-dnie-1.6.8_arm.pkg'
-  printf '%s  %s\n' \
-    '1eb6ef2117953ff787f8a6da6f26c2e9523ebcc2d91ad991c5350a8faab521ed' \
-    "$scratch/dgp.pkg" | /usr/bin/shasum -a 256 -c -
-
-  /usr/sbin/pkgutil --expand-full "$scratch/dgp.pkg" "$scratch/expanded"
-  library="$scratch/expanded/Payload/Libpkcs11-dnie/lib/libpkcs11-dnie.so"
-  test -f "$library" && test ! -L "$library"
-  printf '%s  %s\n' \
-    'd2de4308190433a22683ef7fa85637b446f2a9420e35e50b86314a5590c46bc2' \
-    "$library" | /usr/bin/shasum -a 256 -c -
-  /usr/bin/install -m 600 "$library" "$scratch/dgp-library"
-
-  unset DNIERELEASE_OPENSC_SOURCE
-  DNIERELEASE_OFFICIAL_BINARY="$scratch/dgp-library" \
-  DNIERELEASE_FIXTURE="$scratch/generation2.json" make release-prepare
-  mkdir -p -m 700 Validation/private/SecureChannel
-  /usr/bin/install -m 600 "$scratch/generation2.json" "$fixture"
-)
+make prepare
 ```
 
-On success, only `Validation/private/SecureChannel/generation2.json` is retained,
-with mode `0600`; downloads and extracted middleware are removed on success or
-failure. Keep the resource out of version control. If a download or checksum fails,
-stop and check the official download page; do not substitute another version or
-remove the integrity checks. A rerun starts with a fresh scratch directory.
+This downloads DGP’s **1.6.8 ARM package** from its [official macOS download page](https://www.dnielectronico.es/PortalDNIe/PRF1_Cons02.action?pag=REF_1113),
+verifies the package and library pins, and extracts the library with macOS `pkgutil`.
+It downloads and verifies the OpenSC inputs, then creates
+`Validation/private/SecureChannel/generation2.json` with mode `0600`. That file is
+Git-ignored. No installer, middleware library or package script is executed.
+Downloads and extracted files stay in private temporary storage and are removed
+when preparation finishes or fails. No path edits, signing identity or administrator
+privileges are needed for preparation.
+
+A subsequent `make prepare` verifies and reuses an existing valid resource without
+network access. An invalid resource or unsafe path stops the command and is never
+silently replaced. A failed first preparation can be retried with the same command;
+it starts with fresh temporary storage. If a download or checksum fails, check the
+official download page rather than substituting another version or removing the checks.
+
+Preparation requires macOS, Python 3.9 or later, Make, the macOS-provided `pkgutil`,
+and direct HTTPS access to `www.dnielectronico.es` and `raw.githubusercontent.com`.
+The reviewed DGP package is
+[`libpkcs11-dnie-1.6.8_arm.pkg`](https://www.dnielectronico.es/descargas/software_MACOS/libpkcs11-dnie-1.6.8_arm.pkg),
+2,825,440 bytes, SHA-256
+`1eb6ef2117953ff787f8a6da6f26c2e9523ebcc2d91ad991c5350a8faab521ed`.
+Its extracted ARM library must match the separate hash in the
+[resource notice](../LICENSES/OpenSC-resource.md). This is data preparation; build
+and installation remain separate `make build` and `make install` operations.
+
+For fully offline setup, supply both pinned local inputs:
+
+```sh
+DNIERELEASE_OFFICIAL_BINARY="/canonical/path/to/extracted-arm64-library" \
+DNIERELEASE_OPENSC_SOURCE="/canonical/path/to/cwa-dnie.c" make prepare
+```
 
 ### Prepare a separate release input
 

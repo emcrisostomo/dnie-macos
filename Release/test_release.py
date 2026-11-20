@@ -349,6 +349,356 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(list(output_parent.iterdir()), [])
         self.assertEqual(list(moved.iterdir()), [])
 
+    def development_checkout(self, *, ignored=True):
+        checkout = self.root / "checkout"
+        (checkout / "Validation").mkdir(parents=True)
+        release.git(checkout, "init", "--quiet")
+        if ignored:
+            (checkout / ".gitignore").write_text("/Validation/private/\n")
+        return checkout, checkout / release.CREDENTIAL_SOURCE
+
+    def run_development_prepare(self, checkout, *args, **env):
+        stdout = io.StringIO()
+        script = checkout / "Release/release.py"
+        with patch.object(sys, "argv", ["release.py", "prepare-development", *args]), \
+                patch.object(release, "__file__", str(script)), \
+                patch.object(release.signal, "signal"), \
+                patch.dict(os.environ, env, clear=True), redirect_stdout(stdout):
+            release.main()
+        return stdout.getvalue()
+
+    @contextmanager
+    def mock_development_download(self, *, package_response=None, library=None, extract_error=False):
+        source, official, fields, pins = self.synthetic_credential_inputs()
+        source_data, official_data = source.read_bytes(), official.read_bytes()
+        copying = b"synthetic upstream COPYING"
+        package = b"synthetic official DGP package"
+        work_parent = self.root / "work"
+        work_parent.mkdir(mode=0o700, exist_ok=True)
+        response = self.opensc_response(package) if package_response is None else package_response
+        responses = [response, self.opensc_response(source_data), self.opensc_response(copying)]
+        run = release.command
+        extracted = []
+
+        def command(args, **kwargs):
+            if args[0] != "/usr/sbin/pkgutil":
+                return run(args, **kwargs)
+            _, operation, package_file, destination = args
+            self.assertEqual(operation, "--expand-full")
+            self.assertFalse(destination.exists())
+            self.assertEqual(package_file.parent.parent, work_parent)
+            self.assertEqual(package_file.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(package_file.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(package_file.read_bytes(), package)
+            extracted.append(destination)
+            output = destination / "Payload/Libpkcs11-dnie/lib/libpkcs11-dnie.so"
+            output.parent.mkdir(parents=True)
+            if extract_error:
+                raise release.ReleaseError("DGP package expansion failed.")
+            output.write_bytes(official_data if library is None else library)
+
+        with self.mock_opensc_transport(source_data, copying, pins, responses) as connect, \
+                patch.object(release, "DGP_PACKAGE_SIZE", len(package), create=True), \
+                patch.object(release, "DGP_PACKAGE_SHA256", hashlib.sha256(package).hexdigest(), create=True), \
+                patch.object(release, "DGP_LIBRARY_SIZE", len(official_data), create=True), \
+                patch.object(release, "RELEASE_WORK_PARENT", work_parent), \
+                patch.object(release, "command", side_effect=command):
+            yield connect, extracted, fields
+        self.assertEqual(list(work_parent.iterdir()), [])
+
+    def test_development_prepare_downloads_pinned_inputs_and_publishes_ignored_fixture(self):
+        checkout, output = self.development_checkout()
+        with self.mock_development_download() as (connect, extracted, fields):
+            summary = self.run_development_prepare(
+                checkout, HTTPS_PROXY="http://never-contact.invalid",
+                SSLKEYLOGFILE=str(self.root / "tls-keys"), DNIERELEASE_FIXTURE=str(self.root / "elsewhere"))
+        self.assertIn("fixture written", summary)
+        self.assertEqual(len(extracted), 1)
+        self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(output.stat().st_uid, os.getuid())
+        self.assertEqual(output.stat().st_nlink, 1)
+        for parent in (output.parent, output.parent.parent):
+            self.assertEqual(parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(list(output.parent.iterdir()), [output])
+        self.assertEqual(json.loads(output.read_bytes())["fields_hex"],
+                         {name: data.hex() for name, data in fields.items()})
+        release.git(checkout, "check-ignore", "--quiet", "--", str(release.CREDENTIAL_SOURCE))
+        self.assertFalse((self.root / "elsewhere").exists())
+        self.assertFalse((self.root / "tls-keys").exists())
+        self.assertEqual([args for args, _ in connect.call_args_list],
+                         [("www.dnielectronico.es",), ("raw.githubusercontent.com",), ("raw.githubusercontent.com",)])
+        for _, options in connect.call_args_list:
+            self.assertGreater(options["timeout"], 0)
+            self.assertTrue(options["context"].check_hostname)
+            self.assertEqual(options["context"].verify_mode, ssl.CERT_REQUIRED)
+            self.assertIsNone(getattr(options["context"], "keylog_filename", None))
+        self.assertEqual(connect.return_value.request.call_args_list[0].args, (
+            "GET", "/descargas/software_MACOS/libpkcs11-dnie-1.6.8_arm.pkg"))
+        self.assertEqual(connect.return_value.request.call_args_list[0].kwargs, {})
+
+    def test_development_prepare_rejects_bad_dgp_download_before_expansion_or_opensc(self):
+        checkout, output = self.development_checkout()
+        package = b"synthetic official DGP package"
+        sensitive = "synthetic response body and /path/never-printed"
+        for response, category in (
+                (self.opensc_response(package + b"x"), "size"),
+                (self.opensc_response(package[:-1]), "size"),
+                (self.opensc_response(b"x" + package[1:]), "hash"),
+                (self.opensc_response(sensitive.encode(), 302), "redirect"),
+                (ssl.SSLCertVerificationError(sensitive), "TLS")):
+            with self.subTest(category=category), self.mock_development_download(
+                    package_response=response) as (connect, extracted, _):
+                with self.assertRaisesRegex(release.ReleaseError, f"DGP package.*{category}") as caught:
+                    self.run_development_prepare(checkout)
+                self.assertNotIn(sensitive, str(caught.exception))
+                connect.return_value.request.assert_called_once()
+                self.assertEqual(extracted, [])
+                self.assertFalse(output.exists())
+
+    def test_development_prepare_cleans_expansion_failures_and_rejects_bad_library(self):
+        checkout, output = self.development_checkout()
+        _, official, _, _ = self.synthetic_credential_inputs()
+        valid = official.read_bytes()
+        for library, extract_error, category in (
+                (None, True, "expansion"),
+                (valid[:-1], False, "library.*size"),
+                (b"x" + valid[1:], False, "library.*hash")):
+            with self.subTest(category=category), self.mock_development_download(
+                    library=library, extract_error=extract_error) as (connect, extracted, _):
+                with self.assertRaisesRegex(release.ReleaseError, category):
+                    self.run_development_prepare(checkout)
+                connect.return_value.request.assert_called_once()
+                self.assertEqual(len(extracted), 1)
+                self.assertFalse(output.exists())
+
+    def test_development_prepare_uses_local_overrides_and_reuses_valid_fixture_offline(self):
+        checkout, output = self.development_checkout()
+        source, official, _, pins = self.synthetic_credential_inputs()
+        with patch.multiple(credential_format, **pins), patch.object(http.client, "HTTPSConnection") as connect:
+            self.run_development_prepare(checkout, DNIERELEASE_OFFICIAL_BINARY=str(official),
+                                         DNIERELEASE_OPENSC_SOURCE=str(source))
+            for parent in (output.parent, output.parent.parent):
+                parent.chmod(0o755)
+            before, data = output.stat(), output.read_bytes()
+            result = self.run_development_prepare(checkout)
+            after = output.stat()
+            connect.assert_not_called()
+        self.assertIn("already valid", result)
+        self.assertEqual(output.read_bytes(), data)
+        self.assertEqual((before.st_ino, before.st_mtime_ns, before.st_ctime_ns),
+                         (after.st_ino, after.st_mtime_ns, after.st_ctime_ns))
+        for parent in (output.parent, output.parent.parent):
+            self.assertEqual(parent.stat().st_mode & 0o777, 0o755)
+
+    def test_development_prepare_rejects_rebinding_of_verified_fixture(self):
+        checkout, output = self.development_checkout()
+        source, official, _, pins = self.synthetic_credential_inputs()
+        original = output.with_name("original.json")
+        competing = b"invalid competing fixture"
+        validate = credential_format.source_excerpt_from_fixture
+        with patch.multiple(credential_format, **pins), patch.object(http.client, "HTTPSConnection") as connect:
+            self.run_development_prepare(checkout, DNIERELEASE_OFFICIAL_BINARY=str(official),
+                                         DNIERELEASE_OPENSC_SOURCE=str(source))
+            fixture = output.read_bytes()
+            for change in ("replacement", "absence", "symlink"):
+                def validate_then_rebind(data):
+                    excerpt = validate(data)
+                    output.rename(original)
+                    if change == "replacement":
+                        output.write_bytes(competing)
+                        output.chmod(0o600)
+                    elif change == "symlink":
+                        output.symlink_to(original.name)
+                    return excerpt
+
+                with self.subTest(change=change), patch.object(
+                        credential_format, "source_excerpt_from_fixture", side_effect=validate_then_rebind):
+                    try:
+                        with self.assertRaisesRegex(release.ReleaseError, "changed during validation"):
+                            self.run_development_prepare(checkout)
+                        self.assertEqual(original.read_bytes(), fixture)
+                        if change == "replacement":
+                            self.assertEqual(output.read_bytes(), competing)
+                        elif change == "symlink":
+                            self.assertEqual(output.readlink(), Path(original.name))
+                        else:
+                            self.assertFalse(output.exists())
+                    finally:
+                        if original.exists():
+                            output.unlink(missing_ok=True)
+                            original.rename(output)
+            connect.assert_not_called()
+
+    def test_development_prepare_rejects_same_inode_rewrite_with_restored_mtime(self):
+        checkout, output = self.development_checkout()
+        source, official, _, pins = self.synthetic_credential_inputs()
+        validate = credential_format.source_excerpt_from_fixture
+        with patch.multiple(credential_format, **pins), patch.object(http.client, "HTTPSConnection") as connect:
+            self.run_development_prepare(checkout, DNIERELEASE_OFFICIAL_BINARY=str(official),
+                                         DNIERELEASE_OPENSC_SOURCE=str(source))
+            before = output.stat()
+            competing = output.read_bytes()[:-1] + b"!"
+
+            def validate_then_rewrite(data):
+                excerpt = validate(data)
+                output.write_bytes(competing)
+                os.utime(output, ns=(before.st_atime_ns, before.st_mtime_ns))
+                return excerpt
+
+            with patch.object(credential_format, "source_excerpt_from_fixture", side_effect=validate_then_rewrite):
+                with self.assertRaisesRegex(release.ReleaseError, "changed during validation"):
+                    self.run_development_prepare(checkout)
+            connect.assert_not_called()
+        after = output.stat()
+        self.assertEqual(output.read_bytes(), competing)
+        self.assertEqual((after.st_ino, after.st_size, after.st_mtime_ns),
+                         (before.st_ino, before.st_size, before.st_mtime_ns))
+        self.assertNotEqual(after.st_ctime_ns, before.st_ctime_ns)
+
+    def test_development_prepare_refuses_existing_fixture_with_bad_encoding_or_custody(self):
+        checkout, output = self.development_checkout()
+        source, official, _, pins = self.synthetic_credential_inputs()
+        with patch.multiple(credential_format, **pins), patch.object(http.client, "HTTPSConnection") as connect:
+            self.run_development_prepare(checkout, DNIERELEASE_OFFICIAL_BINARY=str(official),
+                                         DNIERELEASE_OPENSC_SOURCE=str(source))
+            data = output.read_bytes()
+            modified = json.loads(data)
+            modified["local_private_keys_pkcs1_hex"]["pin"] = "00"
+            for payload, mode, category in (
+                    (json.dumps(modified, sort_keys=True, separators=(",", ":")).encode() + b"\n",
+                     0o600, "encoding"),
+                    (data, 0o644, "0600")):
+                output.write_bytes(payload)
+                output.chmod(mode)
+                with self.assertRaisesRegex(release.ReleaseError, category):
+                    self.run_development_prepare(checkout)
+                self.assertEqual(output.read_bytes(), payload)
+            output.chmod(0o600)
+            other = self.root / "other"
+            os.link(output, other)
+            with self.assertRaisesRegex(release.ReleaseError, "unlinked"):
+                self.run_development_prepare(checkout)
+            output.unlink()
+            output.symlink_to(other)
+            with self.assertRaises(release.ReleaseError):
+                self.run_development_prepare(checkout)
+            self.assertTrue(output.is_symlink())
+            connect.assert_not_called()
+
+    def test_development_prepare_refuses_unignored_or_tracked_paths_without_network(self):
+        checkout, output = self.development_checkout(ignored=False)
+        with patch.object(http.client, "HTTPSConnection") as connect:
+            with self.assertRaisesRegex(release.ReleaseError, "ignored"):
+                self.run_development_prepare(checkout)
+            self.assertFalse(output.parent.parent.exists())
+            (checkout / ".gitignore").write_text("/Validation/private/\n")
+            output.parent.mkdir(mode=0o700, parents=True)
+            output.write_bytes(b"tracked")
+            release.git(checkout, "add", "-f", "--", str(release.CREDENTIAL_SOURCE))
+            with self.assertRaisesRegex(release.ReleaseError, "ignored"):
+                self.run_development_prepare(checkout)
+            connect.assert_not_called()
+        self.assertEqual(output.read_bytes(), b"tracked")
+
+    def test_development_prepare_rejects_unsafe_destination_directory_before_network(self):
+        checkout, output = self.development_checkout()
+        private = output.parent.parent
+        other = self.root / "other"
+        other.mkdir(mode=0o700)
+        with patch.object(http.client, "HTTPSConnection") as connect:
+            private.symlink_to(other, target_is_directory=True)
+            with self.assertRaises(release.ReleaseError):
+                self.run_development_prepare(checkout)
+            private.unlink()
+            private.mkdir(mode=0o777)
+            private.chmod(0o777)
+            with self.assertRaisesRegex(release.ReleaseError, "non-shared-writable"):
+                self.run_development_prepare(checkout)
+            private.chmod(0o700)
+            subprocess.run(("/bin/chmod", "+a", "everyone allow list,search", private),
+                           check=True, capture_output=True)
+            with self.assertRaisesRegex(release.ReleaseError, "ACL"):
+                self.run_development_prepare(checkout)
+            connect.assert_not_called()
+        self.assertFalse(output.exists())
+        self.assertEqual(list(other.iterdir()), [])
+
+    def test_development_prepare_rechecks_directory_binding_after_acquisition(self):
+        checkout, output = self.development_checkout()
+        moved = output.parent.with_name("moved")
+        with self.mock_development_download() as (connect, _, _):
+            responses = connect.return_value.getresponse.side_effect
+
+            def replace_directory():
+                response = next(responses)
+                if connect.return_value.request.call_count == 3:
+                    output.parent.rename(moved)
+                    output.parent.mkdir(mode=0o700)
+                return response
+
+            connect.return_value.getresponse.side_effect = replace_directory
+            with self.assertRaisesRegex(release.ReleaseError, "directory changed"):
+                self.run_development_prepare(checkout)
+        self.assertEqual(list(output.parent.iterdir()), [])
+        self.assertEqual(list(moved.iterdir()), [])
+
+    def test_development_prepare_rechecks_ignore_rules_before_atomic_publish(self):
+        checkout, output = self.development_checkout()
+        source, official, _, pins = self.synthetic_credential_inputs()
+        sync = os.fsync
+
+        def unignore(fd):
+            (checkout / ".gitignore").write_text("")
+            return sync(fd)
+
+        with patch.multiple(credential_format, **pins), patch.object(os, "fsync", side_effect=unignore):
+            with self.assertRaisesRegex(release.ReleaseError, "ignored"):
+                self.run_development_prepare(checkout, DNIERELEASE_OFFICIAL_BINARY=str(official),
+                                             DNIERELEASE_OPENSC_SOURCE=str(source))
+        self.assertEqual(list(output.parent.iterdir()), [])
+
+    def test_development_cli_rejects_checkout_and_output_overrides(self):
+        checkout, output = self.development_checkout()
+        with patch.object(http.client, "HTTPSConnection") as connect:
+            for flag in ("--source", "--output"):
+                with self.subTest(flag=flag), self.assertRaisesRegex(release.ReleaseError, "fixed output"):
+                    self.run_development_prepare(checkout, flag, str(self.root / "alternate"))
+            connect.assert_not_called()
+        self.assertFalse(output.parent.parent.exists())
+
+    def test_development_prepare_preserves_concurrent_fixture_and_cleans_pending_file(self):
+        checkout, output = self.development_checkout()
+        source, official, _, pins = self.synthetic_credential_inputs()
+        link = os.link
+
+        def compete(*args, **kwargs):
+            output.write_bytes(b"concurrent fixture")
+            return link(*args, **kwargs)
+
+        with patch.multiple(credential_format, **pins), patch.object(os, "link", side_effect=compete):
+            with self.assertRaisesRegex(release.ReleaseError, "already exists"):
+                self.run_development_prepare(checkout, DNIERELEASE_OFFICIAL_BINARY=str(official),
+                                             DNIERELEASE_OPENSC_SOURCE=str(source))
+        self.assertEqual(output.read_bytes(), b"concurrent fixture")
+        self.assertEqual(list(output.parent.iterdir()), [output])
+
+    def test_make_prepare_dispatches_and_rejects_combined_operations(self):
+        makefiles = [self.checkout / "Makefile",
+                     self.checkout / "Validation/public-overrides/files/Makefile"]
+        for makefile in makefiles:
+            if not makefile.is_file():
+                continue
+            with self.subTest(makefile=makefile):
+                make = ("/usr/bin/make", "-n", "-f", makefile)
+                checked = subprocess.run((*make, "prepare"), cwd=self.checkout, capture_output=True, text=True)
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+                self.assertIn("Release/release.py prepare-development", checked.stdout)
+                combined = subprocess.run((*make, "prepare", "build"), cwd=self.checkout,
+                                          capture_output=True, text=True)
+                self.assertNotEqual(combined.returncode, 0)
+                self.assertIn("exactly one operational target", combined.stderr)
+                self.assertEqual(combined.stdout, "")
+
     def test_credential_preparation_reconstructs_identical_fixture_from_packaged_source(self):
         source, official, fields, pins = self.synthetic_credential_inputs()
         checkout = self.checkout
