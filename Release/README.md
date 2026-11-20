@@ -43,31 +43,45 @@ The app bundle includes the unmodified GPLv3 text, the scoped public-source noti
 original OpenSC LGPLv2.1 text and the exact project source revision, tree and URL.
 The diagnostic carries the notices but omits the credential asset and its source excerpt.
 
-## Prepare or rebuild the generation-2 resource offline
+## Prepare or rebuild the generation-2 resource
 
-Obtain `src/libopensc/cwa-dnie.c` from OpenSC commit
-`bc9a74a44565c091fc473d87193ec3a35c55b1f0` and separately extract the ARM64 PKCS#11
-library from DGP's macOS ARM middleware 1.6.8 into a private scratch directory.
-The inputs are data files. The preparation command reads them without installing or
-executing either one. The reviewed sources, hashes and licence election are recorded
-in the [OpenSC resource notice](../LICENSES/OpenSC-resource.md).
+`make release-prepare` automatically downloads `src/libopensc/cwa-dnie.c` and
+`COPYING` from the pinned OpenSC commit
+`bc9a74a44565c091fc473d87193ec3a35c55b1f0`. It verifies their exact sizes and
+SHA-256 hashes before using the data. Downloads require direct HTTPS access to
+`raw.githubusercontent.com`; no GitHub account, token or OpenSC checkout is needed. The files stay in memory and are never executed or
+cached in the repository. Download or integrity failures stop preparation.
+
+Separately obtain the ARM64 PKCS#11 library from DGP's macOS ARM middleware 1.6.8.
+It remains an independently supplied input: this command does not download,
+install or execute DGP middleware. The exact library hash, OpenSC source pin
+and licence election are in the [resource notice](../LICENSES/OpenSC-resource.md).
 
 ```sh
 credential_parent="$(mktemp -d /private/tmp/dnie-credential.XXXXXXXX)"
-export DNIERELEASE_OPENSC_SOURCE="/canonical/path/to/cwa-dnie.c"
 export DNIERELEASE_OFFICIAL_BINARY="/canonical/path/to/extracted-arm64-library"
 export DNIERELEASE_FIXTURE="$credential_parent/generation2.json"
 make release-prepare
 ```
 
-This validates both input hashes, the presence of all 18 generation-2 fields in the
-official library and their ordered manifest. It writes the same deterministic fixture format
-used by the runtime verifier. Supply owner-controlled, unlinked regular input files with
-canonical paths. The output must be absent under an existing owner-only directory with
+This validates the downloaded source and licence, the DGP library hash, the presence
+of all 18 generation-2 fields in that library and their ordered manifest. It writes
+the same deterministic fixture format
+used by the runtime verifier. The local DGP library and any offline source override
+must be owner-controlled, unlinked regular files with canonical paths. The output
+must be absent under an existing owner-only directory with
 mode `0700` outside the checkout. The completed file has mode `0600`.
 The macOS custody checks reject ACL entries that could grant access on these files
 or their directory ancestors. Keep the inputs and outputs outside Git.
 Only categorical results are printed.
+
+### Offline preparation
+
+To prepare without network access, additionally set
+`DNIERELEASE_OPENSC_SOURCE=/canonical/path/to/cwa-dnie.c` to an already obtained,
+verified copy of the same source. With that override, preparation makes no network
+requests; the repository already contains the pinned upstream licence text. The
+DGP library and all existing integrity/custody checks are still required.
 
 The credential-bearing app carries the converted data source and Python transformer in
 `Contents/Resources/OpenSC-source/`. Rebuild the exact resource from its corresponding

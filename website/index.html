@@ -133,12 +133,11 @@ cd dnie-macos</code></pre>
             </li>
             <li>
               <h3>Prepare the terminal data</h3>
-              <p>The build uses shared generation-2 protocol data distinct from your card’s PIN and private keys. The <a href="https://github.com/emcrisostomo/dnie-macos/blob/main/Release/README.md#prepare-or-rebuild-the-generation-2-resource-offline">release guide</a> identifies the required OpenSC source file and the DGP ARM middleware library.</p>
-              <p>Replace the two input placeholders with absolute paths to those files. The preparation command verifies the pinned inputs and writes the resource locally. Keep the resource in the Git-ignored location below. After a successful copy, the commands remove the temporary file and its scratch directory.</p>
+              <p>The build uses shared generation-2 protocol data distinct from your card’s PIN and private keys. The preparation command automatically downloads and verifies the pinned OpenSC source and licence. Separately obtain the DGP ARM middleware library identified in the <a href="https://github.com/emcrisostomo/dnie-macos/blob/main/Release/README.md#prepare-or-rebuild-the-generation-2-resource">release guide</a>.</p>
+              <p>Replace the library placeholder with its absolute path. Preparation requires direct HTTPS access to GitHub; the guide also documents an offline override. The verified resource is written locally. Keep the resource in the Git-ignored location below. After a successful copy, the commands remove the temporary file and its scratch directory.</p>
               <pre><code>(
   set -eu
   resource_dir="$(mktemp -d /private/tmp/dnie-resource.XXXXXXXX)"
-  DNIERELEASE_OPENSC_SOURCE="/path/to/cwa-dnie.c" \
   DNIERELEASE_OFFICIAL_BINARY="/path/to/extracted-arm64-library" \
   DNIERELEASE_FIXTURE="$resource_dir/generation2.json" make release-prepare
 

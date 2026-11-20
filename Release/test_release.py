@@ -1,10 +1,15 @@
+from contextlib import contextmanager, redirect_stdout
 import gzip
 import hashlib
+import http.client
+import io
 import struct
 import json
 import os
 import plistlib
 from pathlib import Path
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -176,6 +181,173 @@ class ReleaseTests(unittest.TestCase):
                 "OFFICIAL_BINARY_SHA256": hashlib.sha256(official.read_bytes()).hexdigest(),
                 "MANIFEST_V2_SHA256": hashlib.sha256(framed).hexdigest()}
         return source, official, fields, pins
+
+    @contextmanager
+    def mock_opensc_transport(self, source, copying, pins, responses):
+        notices = {**release.NOTICE_HASHES,
+                   Path("LICENSES/OpenSC-LGPL-2.1.txt"): hashlib.sha256(copying).hexdigest()}
+        with patch.multiple(credential_format, **pins), \
+                patch.object(release, "OPENSC_SOURCE_SIZE", len(source)), \
+                patch.object(release, "OPENSC_COPYING_SIZE", len(copying)), \
+                patch.object(release, "NOTICE_HASHES", notices), \
+                patch.object(http.client, "HTTPSConnection") as connect:
+            connect.return_value.getresponse.side_effect = responses
+            yield connect
+
+    def opensc_response(self, data, status=200):
+        response = io.BytesIO(data)
+        response.status = status
+        return response
+
+    def run_prepare_command(self, official, output, **env):
+        stdout = io.StringIO()
+        config = {"DNIERELEASE_FIXTURE": str(output), "DNIERELEASE_OFFICIAL_BINARY": str(official), **env}
+        with patch.object(sys, "argv", ["release.py", "prepare-credential"]), \
+                patch.object(release.signal, "signal"), \
+                patch.dict(os.environ, config, clear=True), \
+                redirect_stdout(stdout):
+            release.main()
+        return stdout.getvalue()
+
+    def test_automatic_prepare_uses_exact_https_inputs_and_writes_only_private_fixture(self):
+        source, official, fields, pins = self.synthetic_credential_inputs()
+        raw_source = source.read_bytes()
+        source.unlink()
+        copying = b"synthetic upstream COPYING"
+        upstream = "/OpenSC/OpenSC/bc9a74a44565c091fc473d87193ec3a35c55b1f0"
+        for mask in (0o022, 0o077):
+            with self.subTest(umask=oct(mask)):
+                os.umask(mask)
+                output = self.root / "generation2.json"
+                responses = [self.opensc_response(raw_source), self.opensc_response(copying)]
+                with self.mock_opensc_transport(raw_source, copying, pins, responses) as connect, \
+                        patch.object(responses[0], "read", wraps=responses[0].read) as source_read, \
+                        patch.object(responses[1], "read", wraps=responses[1].read) as copying_read:
+                    summary = self.run_prepare_command(official, output, HTTPS_PROXY="http://never-contact.invalid",
+                                                       SSLKEYLOGFILE=str(self.root / "tls-keys"))
+                self.assertEqual(summary, "Credential preparation passed. Private fixture written.\n")
+                self.assertEqual(set(self.root.iterdir()), {official, output})
+                self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(output.stat().st_uid, os.getuid())
+                self.assertEqual(output.stat().st_nlink, 1)
+                self.assertEqual(json.loads(output.read_bytes())["fields_hex"],
+                                 {name: data.hex() for name, data in fields.items()})
+                self.assertEqual(connect.call_count, 2)
+                for arguments, options in connect.call_args_list:
+                    self.assertEqual(arguments, ("raw.githubusercontent.com",))
+                    self.assertGreater(options["timeout"], 0)
+                    self.assertLessEqual(options["timeout"], 30)
+                    self.assertTrue(options["context"].check_hostname)
+                    self.assertEqual(options["context"].verify_mode, ssl.CERT_REQUIRED)
+                requests = connect.return_value.request.call_args_list
+                self.assertEqual([args for args, _ in requests],
+                                 [("GET", upstream + "/src/libopensc/cwa-dnie.c"),
+                                  ("GET", upstream + "/COPYING")])
+                for _, options in requests:
+                    self.assertNotIn("authorization", {name.lower() for name in options.get("headers", {})})
+                source_read.assert_called_once_with(len(raw_source) + 1)
+                copying_read.assert_called_once_with(len(copying) + 1)
+                output.unlink()
+
+    def test_automatic_prepare_rejects_wrong_length_or_hash_for_either_input(self):
+        source, official, _, pins = self.synthetic_credential_inputs()
+        raw_source, copying = source.read_bytes(), b"synthetic upstream COPYING"
+        output = self.root / "absent"
+        names = ("OpenSC source", "OpenSC COPYING")
+        for index, data in enumerate((raw_source, copying)):
+            for invalid, category in ((data[:-1], "size"), (data + b"x", "size"),
+                                      (b"x" + data[1:], "hash")):
+                with self.subTest(file=names[index], failure=category):
+                    responses = [self.opensc_response(raw_source), self.opensc_response(copying)]
+                    responses[index] = self.opensc_response(invalid)
+                    with self.mock_opensc_transport(raw_source, copying, pins, responses) as connect, \
+                            patch.object(credential_format, "fixture_from_inputs") as transform, \
+                            self.assertRaisesRegex(release.ReleaseError, f"{names[index]}.*{category}"):
+                        release.prepare_credential(None, official, output, self.checkout)
+                    self.assertEqual(connect.call_count, index + 1)
+                    transform.assert_not_called()
+                    self.assertEqual(set(self.root.iterdir()), {source, official})
+
+    def test_automatic_prepare_redacts_transport_failures_and_does_not_follow_or_retry(self):
+        source, official, _, pins = self.synthetic_credential_inputs()
+        raw_source, copying = source.read_bytes(), b"synthetic upstream COPYING"
+        output = self.root / "absent"
+        sensitive = "synthetic error value and /path/never-printed"
+        redirect = self.opensc_response(sensitive.encode(), 302)
+        error = self.opensc_response(sensitive.encode(), 503)
+        with patch.object(redirect, "read", side_effect=AssertionError("redirect body read")), \
+                patch.object(error, "read", side_effect=AssertionError("HTTP error body read")):
+            for response, category in (
+                    (redirect, "redirect"), (error, "HTTP status"), (TimeoutError(sensitive), "timed out"),
+                    (socket.timeout(sensitive), "timed out"),
+                    (ssl.SSLCertVerificationError(sensitive), "TLS"),
+                    (http.client.HTTPException(sensitive), "transport"), (OSError(sensitive), "transport")):
+                with self.subTest(failure=category), \
+                        self.mock_opensc_transport(raw_source, copying, pins, [response]) as connect:
+                    with self.assertRaisesRegex(release.ReleaseError, category) as caught:
+                        release.prepare_credential(None, official, output, self.checkout)
+                    self.assertNotIn(sensitive, str(caught.exception))
+                    connect.return_value.request.assert_called_once()
+                    self.assertEqual(set(self.root.iterdir()), {source, official})
+
+    def test_automatic_prepare_checks_output_and_official_binary_before_network(self):
+        source, official, _, pins = self.synthetic_credential_inputs()
+        existing = self.root / "existing"
+        existing.write_bytes(b"preserve")
+        shared = self.root / "shared"
+        shared.mkdir(mode=0o755)
+        checkout = self.root / "checkout"
+        checkout.mkdir(mode=0o700)
+        wrong = self.root / "wrong-binary"
+        wrong.write_bytes(b"synthetic wrong DGP input")
+        absent = self.root / "absent"
+        linked = self.root / "linked"
+        linked.symlink_to(official)
+        with patch.multiple(credential_format, **pins), patch.object(http.client, "HTTPSConnection") as connect:
+            for binary, output, failure in (
+                    (official, existing, "already exists"), (official, shared / "absent", "0700"),
+                    (official, checkout / "absent", "outside the source checkout"),
+                    (absent, absent, "DGP binary input"), (linked, absent, "DGP binary input|canonical"),
+                    (wrong, absent, "DGP binary hash"), (None, absent, "DGP binary input")):
+                with self.subTest(failure=failure), self.assertRaisesRegex(release.ReleaseError, failure):
+                    release.prepare_credential(None, binary, output, checkout)
+            connect.assert_not_called()
+        self.assertEqual(existing.read_bytes(), b"preserve")
+        self.assertFalse(absent.exists())
+        self.assertEqual(list(shared.iterdir()), [])
+        self.assertEqual(list(checkout.iterdir()), [])
+
+    def test_explicit_opensc_source_keeps_prepare_offline(self):
+        source, official, fields, pins = self.synthetic_credential_inputs()
+        output = self.root / "generation2.json"
+        with patch.multiple(credential_format, **pins), patch.object(http.client, "HTTPSConnection") as connect:
+            self.run_prepare_command(official, output, DNIERELEASE_OPENSC_SOURCE=str(source))
+            connect.assert_not_called()
+        self.assertEqual(json.loads(output.read_bytes())["fields_hex"],
+                         {name: data.hex() for name, data in fields.items()})
+
+    def test_automatic_prepare_rechecks_original_output_directory_before_writing(self):
+        source, official, _, pins = self.synthetic_credential_inputs()
+        raw_source, copying = source.read_bytes(), b"synthetic upstream COPYING"
+        checkout = self.root / "checkout"
+        checkout.mkdir(mode=0o700)
+        output_parent = self.root / "private"
+        output_parent.mkdir(mode=0o700)
+        moved = checkout / "private"
+        responses = iter((self.opensc_response(raw_source), self.opensc_response(copying)))
+
+        def move_parent_during_transfer():
+            response = next(responses)
+            if response.getvalue() == copying:
+                output_parent.rename(moved)
+                output_parent.mkdir(mode=0o700)
+            return response
+
+        with self.mock_opensc_transport(raw_source, copying, pins, move_parent_during_transfer), \
+                self.assertRaisesRegex(release.ReleaseError, "output directory changed"):
+            release.prepare_credential(None, official, output_parent / "generation2.json", checkout)
+        self.assertEqual(list(output_parent.iterdir()), [])
+        self.assertEqual(list(moved.iterdir()), [])
 
     def test_credential_preparation_reconstructs_identical_fixture_from_packaged_source(self):
         source, official, fields, pins = self.synthetic_credential_inputs()

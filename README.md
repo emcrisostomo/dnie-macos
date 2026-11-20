@@ -55,16 +55,15 @@ The build needs generation-2 terminal data derived from OpenSC. This is shared p
 data, distinct from your DNIe PIN and the private keys held by your card. Its values are
 not stored in this repository.
 
-Obtain the two pinned inputs described in the
-[resource preparation guide](Release/README.md#prepare-or-rebuild-the-generation-2-resource-offline):
-the OpenSC source file and the DGP ARM middleware library. Then replace the input paths below
-with the absolute paths to your files:
+The preparation command automatically downloads and verifies the pinned OpenSC
+source and licence. Separately obtain the DGP ARM middleware library described in the
+[resource preparation guide](Release/README.md#prepare-or-rebuild-the-generation-2-resource),
+then replace the library path below with its absolute path:
 
 ```sh
 (
   set -eu
   resource_dir="$(mktemp -d /private/tmp/dnie-resource.XXXXXXXX)"
-  DNIERELEASE_OPENSC_SOURCE="/path/to/cwa-dnie.c" \
   DNIERELEASE_OFFICIAL_BINARY="/path/to/extracted-arm64-library" \
   DNIERELEASE_FIXTURE="$resource_dir/generation2.json" make release-prepare
 
@@ -77,7 +76,8 @@ with the absolute paths to your files:
 )
 ```
 
-Preparation verifies the pinned hashes and data before writing the local resource.
+Preparation requires direct HTTPS access to GitHub and verifies all inputs before writing
+the local resource. The release guide also documents an offline override.
 After a successful copy, the commands remove the temporary file and its scratch directory.
 Keep the local resource out of version control. Its destination above is Git-ignored.
 

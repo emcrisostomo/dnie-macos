@@ -2,13 +2,14 @@
 """Build and verify the pinned arm64 macOS component package."""
 
 import argparse
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import ctypes
 import errno
 import fcntl
 from functools import lru_cache
 import gzip
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -18,6 +19,8 @@ import plistlib
 import re
 import shutil
 import signal
+import socket
+import ssl
 import stat
 import struct
 import subprocess
@@ -53,6 +56,10 @@ NOTICE_HASHES = {
     Path("LICENSES/OpenSC-LGPL-2.1.txt"): "376b54d4c5f4aa99421823fa4da93e3ab73096fce2400e89858632aa7da24a14",
     Path("LICENSES/OpenSC-resource.md"): "9857b5d2cd4327ef9f17e0204a5d2634df0d5953f725a16d1c05dc000d0e7b4a",
 }
+OPENSC_REVISION = "bc9a74a44565c091fc473d87193ec3a35c55b1f0"
+OPENSC_SOURCE_SIZE = 54_208
+OPENSC_COPYING_SIZE = 26_522
+OPENSC_TIMEOUT = 15
 PUBLIC_REPOSITORY = "https://github.com/emcrisostomo/dnie-macos"
 STAGE_SCRIPT = Path("Validation/Scripts/stage-production-credential-asset.sh")
 CREDENTIAL_SOURCE = Path("Validation/private/SecureChannel/generation2.json")
@@ -396,13 +403,60 @@ def read_preparation_input(path, limit, label):
     return data
 
 
+def fetch_opensc_inputs() -> tuple[bytes, bytes]:
+    """Fetch and verify the pinned source and licence in memory over direct HTTPS."""
+    try:
+        # Use standard certificate and hostname verification without TLS key logging.
+        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        tls.load_default_certs()
+    except OSError:
+        raise ReleaseError("OpenSC TLS trust could not be initialized.") from None
+
+    def fetch(path, size, digest, label):
+        try:
+            # Direct egress avoids environment proxies, credentials and redirect handling.
+            with closing(http.client.HTTPSConnection("raw.githubusercontent.com",
+                                                     timeout=OPENSC_TIMEOUT, context=tls)) as connection:
+                connection.request("GET", f"/OpenSC/OpenSC/{OPENSC_REVISION}/{path}")
+                with connection.getresponse() as response:
+                    if 300 <= response.status < 400:
+                        raise ReleaseError(f"{label} download received a redirect.")
+                    if response.status != 200:
+                        raise ReleaseError(f"{label} download failed with an unexpected HTTP status.")
+                    data = response.read(size + 1)
+        except (TimeoutError, socket.timeout):
+            raise ReleaseError(f"{label} download timed out.") from None
+        except ssl.SSLError:
+            raise ReleaseError(f"{label} download failed TLS verification or negotiation.") from None
+        except (OSError, http.client.HTTPException):
+            raise ReleaseError(f"{label} download failed at the transport boundary.") from None
+        if len(data) != size:
+            raise ReleaseError(f"{label} download size does not match the reviewed pin.")
+        if sha256(data) != digest:
+            raise ReleaseError(f"{label} download hash does not match the reviewed pin.")
+        return data
+
+    source = fetch("src/libopensc/cwa-dnie.c", OPENSC_SOURCE_SIZE,
+                   credential_transform().SOURCE_SHA256, "OpenSC source")
+    copying = fetch("COPYING", OPENSC_COPYING_SIZE,
+                    NOTICE_HASHES[Path("LICENSES/OpenSC-LGPL-2.1.txt")], "OpenSC COPYING")
+    return source, copying
+
+
 def credential_bytes(source, official_binary):
     credential_format = credential_transform()
     try:
-        data = read_preparation_input(source, SOURCE_LIMIT, "Credential source input")
+        if source is not None:
+            data = read_preparation_input(source, SOURCE_LIMIT, "Credential source input")
+            if official_binary is None:
+                return credential_format.fixture_from_excerpt(data)
         if official_binary is None:
-            return credential_format.fixture_from_excerpt(data)
+            raise ReleaseError("Provide the independently obtained DGP binary input.")
         official = read_preparation_input(official_binary, OFFICIAL_BINARY_LIMIT, "DGP binary input")
+        if source is None:
+            if sha256(official) != credential_format.OFFICIAL_BINARY_SHA256:
+                raise ReleaseError("Pinned official DGP binary hash mismatch.")
+            data, _ = fetch_opensc_inputs()
         return credential_format.fixture_from_inputs(data, official)
     except credential_format.CredentialFormatError as error:
         raise ReleaseError(str(error)) from None
@@ -410,7 +464,7 @@ def credential_bytes(source, official_binary):
         raise ReleaseError("Credential encoding failed.") from None
 
 
-def prepare_credential(source, official_binary, output, root):
+def open_credential_output_parent(output, root):
     try:
         output = canonical(output)
         directory = open_output_parent(output, root)
@@ -429,8 +483,28 @@ def prepare_credential(source, official_binary, output, root):
             pass
         else:
             raise ReleaseError("Credential output already exists. Choose an absent file.")
+        return directory
+    except OSError:
+        os.close(directory)
+        raise ReleaseError("Credential output could not be inspected safely.") from None
+    except BaseException:
+        os.close(directory)
+        raise
 
+
+def prepare_credential(source, official_binary, output, root):
+    directory = open_credential_output_parent(output, root)
+    try:
         data = credential_bytes(source, official_binary)
+        if source is None:
+            # The network delay gives the output path time to change. Keep the original binding
+            # and recheck owner, mode, ACLs and checkout exclusion on the path before writing.
+            checked = open_credential_output_parent(output, root)
+            try:
+                if not os.path.samestat(os.fstat(directory), os.fstat(checked)):
+                    raise ReleaseError("Credential output directory changed during acquisition.")
+            finally:
+                os.close(checked)
         pending = f".credential-{uuid.uuid4().hex}"
         fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      mode=0o600, dir_fd=directory)
@@ -1358,7 +1432,7 @@ HELP = """Release packaging
   make release-check          Check the exact checkout and pinned toolchain
   make release-unsigned       Build and inspect a credential-free diagnostic package
   make release-repeatability  Compare two clean unsigned payloads and record the first difference
-  make release-prepare        Prepare the private OpenSC-derived credential resource offline
+  make release-prepare        Prepare the private resource with a pinned OpenSC download by default
   make release-rebuild        Rebuild the resource from its packaged corresponding source
   make release                Run the authorized Developer ID and notarization workflow
   make release-verify         Re-inspect an existing diagnostic or stapled package
@@ -1408,8 +1482,8 @@ def main():
         if output is None:
             raise ReleaseError("Provide an absent private credential output file.")
         if args.operation == "prepare-credential":
-            if args.opensc_source is None or args.official_binary is None:
-                raise ReleaseError("Provide both pinned credential preparation inputs.")
+            if args.official_binary is None:
+                raise ReleaseError("Provide the independently obtained DGP binary input.")
             source, official_binary = args.opensc_source, args.official_binary
         else:
             if args.excerpt is None:
