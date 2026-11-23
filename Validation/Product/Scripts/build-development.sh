@@ -18,12 +18,12 @@ if (( ${+DNIE_DEVELOPMENT_BUILD_SLOT} )); then
 fi
 case "${build_slot}" in
   T067|T083CleanIncremental)
-    marketing_version="0.1.0"
-    build_number="1"
-    ;;
-  T083Upgrade)
     marketing_version="0.1.1"
     build_number="2"
+    ;;
+  T083Upgrade)
+    marketing_version="0.1.2"
+    build_number="3"
     ;;
   *)
     print -u2 "DNIE_DEVELOPMENT_BUILD_SLOT must be T067 or T083CleanIncremental, or T083Upgrade."

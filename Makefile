@@ -4,7 +4,7 @@ SHELL := /bin/zsh
 
 WORKFLOW := Validation/Product/Scripts/developer-workflow.sh
 RELEASE_GOALS := release-prepare release-rebuild release-check release-unsigned release-repeatability release release-verify release-test
-OPERATIONAL_GOALS := check prepare build install status test upgrade uninstall disable enable clean $(RELEASE_GOALS)
+OPERATIONAL_GOALS := check prepare build install status card-info test upgrade uninstall disable enable clean $(RELEASE_GOALS)
 REQUESTED_OPERATIONS := $(filter $(OPERATIONAL_GOALS),$(MAKECMDGOALS))
 
 ifneq ($(word 2,$(REQUESTED_OPERATIONS)),)
@@ -15,6 +15,7 @@ endif
 
 help:
 	@$(WORKFLOW) help
+	@printf '  card-info Show reader/card state and native DNIe key visibility without a PIN\n'
 	@/usr/bin/python3 -B Release/release.py help
 
 check:
@@ -25,6 +26,7 @@ check:
 	@Validation/Product/Scripts/test-pilot-upgrade-root.sh
 	@Validation/Product/Scripts/test-pilot-lifecycle-privileged-static.sh
 	@Validation/Product/Scripts/test-scan-secret-logs.sh
+	@Validation/Product/Scripts/test-card-info.sh
 
 prepare:
 	@/usr/bin/python3 -B Release/release.py prepare-development
@@ -38,6 +40,9 @@ install:
 status:
 	@$(WORKFLOW) status
 
+card-info:
+	@Validation/Product/Scripts/card-info.sh
+
 test:
 	@Validation/Product/Scripts/test-build-development-slot.sh
 	@Validation/Product/Scripts/test-developer-workflow.sh
@@ -45,6 +50,7 @@ test:
 	@Validation/Product/Scripts/test-pilot-upgrade-root.sh
 	@Validation/Product/Scripts/test-pilot-lifecycle-privileged-static.sh
 	@Validation/Product/Scripts/test-scan-secret-logs.sh
+	@Validation/Product/Scripts/test-card-info.sh
 
 upgrade uninstall disable enable clean:
 	@$(WORKFLOW) $@

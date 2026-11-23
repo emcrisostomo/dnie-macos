@@ -95,6 +95,18 @@ To uninstall the development build installed by this workflow:
 make uninstall
 ```
 
+## Reader and card information
+
+```sh
+make card-info
+```
+
+Shows live reader-slot/card state and, separately, native key references with the
+DNIe authentication and signature labels in the Data Protection keychain. It opens no card session and requests no PIN.
+These observations do not prove that a key belongs to a particular inserted card
+or that authentication will succeed. An absent reader or card is a normal result. Keys not observed by this restricted
+query may still be available through another keychain path.
+
 ## Tests and release packages
 
 Run the offline checks without a card or terminal-data resource:

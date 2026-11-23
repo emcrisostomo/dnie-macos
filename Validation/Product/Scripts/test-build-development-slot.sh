@@ -31,10 +31,10 @@ run_check() {
 
 default_output="$(run_check)"
 [[ "${default_output}" == *$'development_build_slot=T067\n'* ]]
-[[ "${default_output}" == *$'marketing_version=0.1.0\n'* ]]
-[[ "${default_output}" == *$'build_number=1\n'* ]]
-[[ "${default_output}" == *$'xcodebuild_marketing_version_argument=MARKETING_VERSION=0.1.0\n'* ]]
-[[ "${default_output}" == *$'xcodebuild_build_number_argument=CURRENT_PROJECT_VERSION=1\n'* ]]
+[[ "${default_output}" == *$'marketing_version=0.1.1\n'* ]]
+[[ "${default_output}" == *$'build_number=2\n'* ]]
+[[ "${default_output}" == *$'xcodebuild_marketing_version_argument=MARKETING_VERSION=0.1.1\n'* ]]
+[[ "${default_output}" == *$'xcodebuild_build_number_argument=CURRENT_PROJECT_VERSION=2\n'* ]]
 [[ "${default_output}" == *$'development_build_slot_state=absent\n'* ]]
 [[ "${default_output}" == *$'credential_staging_performed=false\n'* ]]
 [[ "${default_output}" == *$'signing_keychain_inspected=false\n'* ]]
@@ -44,18 +44,18 @@ default_output="$(run_check)"
 mkdir "${test_repository}/DerivedData"
 validation_absent_output="$(run_check DNIE_DEVELOPMENT_BUILD_SLOT=T083CleanIncremental)"
 [[ "${validation_absent_output}" == *$'development_build_slot=T083CleanIncremental\n'* ]]
-[[ "${validation_absent_output}" == *$'marketing_version=0.1.0\n'* ]]
-[[ "${validation_absent_output}" == *$'build_number=1\n'* ]]
+[[ "${validation_absent_output}" == *$'marketing_version=0.1.1\n'* ]]
+[[ "${validation_absent_output}" == *$'build_number=2\n'* ]]
 [[ "${validation_absent_output}" == *$'development_build_slot_state=absent\n'* ]]
 [[ ! -e "${sentinel}" ]]
 
 upgrade_absent_output="$(run_check DNIE_DEVELOPMENT_BUILD_SLOT=T083Upgrade)"
 [[ "${upgrade_absent_output}" == *$'development_build_slot=T083Upgrade\n'* ]]
 [[ "${upgrade_absent_output}" == *$'development_build_slot_state=absent\n'* ]]
-[[ "${upgrade_absent_output}" == *$'marketing_version=0.1.1\n'* ]]
-[[ "${upgrade_absent_output}" == *$'build_number=2\n'* ]]
-[[ "${upgrade_absent_output}" == *$'xcodebuild_marketing_version_argument=MARKETING_VERSION=0.1.1\n'* ]]
-[[ "${upgrade_absent_output}" == *$'xcodebuild_build_number_argument=CURRENT_PROJECT_VERSION=2\n'* ]]
+[[ "${upgrade_absent_output}" == *$'marketing_version=0.1.2\n'* ]]
+[[ "${upgrade_absent_output}" == *$'build_number=3\n'* ]]
+[[ "${upgrade_absent_output}" == *$'xcodebuild_marketing_version_argument=MARKETING_VERSION=0.1.2\n'* ]]
+[[ "${upgrade_absent_output}" == *$'xcodebuild_build_number_argument=CURRENT_PROJECT_VERSION=3\n'* ]]
 [[ ! -e "${sentinel}" ]]
 
 mkdir -p "${test_repository}/DerivedData/T083Upgrade/Build/Products"
@@ -177,8 +177,8 @@ for plist in "${repository_root}/HostApp/Info.plist" "${repository_root}/TokenEx
   [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${plist}")" == '$(MARKETING_VERSION)' ]]
   [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${plist}")" == '$(CURRENT_PROJECT_VERSION)' ]]
 done
-[[ "$(grep -c 'MARKETING_VERSION = 0.1.0;' "${repository_root}/DNIeToken.xcodeproj/project.pbxproj")" -eq 4 ]]
-[[ "$(grep -c 'CURRENT_PROJECT_VERSION = 1;' "${repository_root}/DNIeToken.xcodeproj/project.pbxproj")" -eq 4 ]]
+[[ "$(grep -c 'MARKETING_VERSION = 0.1.1;' "${repository_root}/DNIeToken.xcodeproj/project.pbxproj")" -eq 4 ]]
+[[ "$(grep -c 'CURRENT_PROJECT_VERSION = 2;' "${repository_root}/DNIeToken.xcodeproj/project.pbxproj")" -eq 4 ]]
 grep -q 'MARKETING_VERSION="${marketing_version}"' "${source_script}"
 grep -q 'CURRENT_PROJECT_VERSION="${build_number}"' "${source_script}"
 ! grep -q "PlistBuddy.*Set.*CFBundle\(ShortVersionString\|Version\)" "${source_script}"

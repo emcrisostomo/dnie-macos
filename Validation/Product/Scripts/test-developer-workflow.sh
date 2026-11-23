@@ -205,4 +205,80 @@ grep -q '^-f$' "${fixture_root}/sudo.command"
 grep -q '^pilot-lifecycle-root.sh$' <(/usr/bin/sed 's#^.*/##' "${fixture_root}/sudo.command")
 grep -q "^$(/usr/bin/id -u)$" "${fixture_root}/sudo.command"
 
+# A foreground lifecycle uses the same terminal transport even when a phase
+# discards stdout or captures a proof. A detached invocation uses native GUI.
+fixture_cdhash=0123456789abcdef0123456789abcdef01234567
+write_stub inspect-artifact '[[ "$#" -eq 1 ]]; print "artifact_cdhash='"${fixture_cdhash}"'"'
+write_stub pgrep 'exit 1'
+write_stub sleep 'exit 0'
+write_stub pluginkit '
+[[ "$1" == -m ]] || exit 99
+if [[ -e "'"${fixture_root}"'/registered" ]]; then
+  print "+ org.dniemacos.dnietoken.tokenextension (0.1.0)"
+  print "    Path = ${DNIE_WORKFLOW_DESTINATION_APP}/Contents/PlugIns/DNIeTokenExtension.appex"
+fi'
+write_stub sudo '
+[[ "$1" == /usr/bin/env && "$8" == -- && "${13}" == "$(/usr/bin/id -u)" ]] || exit 99
+shift 13
+phase="$1"
+print -r -- "sudo:${phase}" >> "'"${fixture_root}"'/transport-trace"
+case "${phase}" in
+  authorize|install|commit-install) ;;
+  register-securityagent) /usr/bin/touch "'"${fixture_root}"'/registered" ;;
+  probe-pending-install)
+    print -rl -- pending_install_recoverable=true "pending_install_token=$2" "pending_install_cdhash=$3"
+    ;;
+  rollback-pending-install) exit 77 ;;
+  *) exit 99 ;;
+esac'
+write_stub osascript '
+print -r -- native-gui >> "'"${fixture_root}"'/transport-trace"
+if [[ "$4" == *" register-securityagent "* ]]; then /usr/bin/touch "'"${fixture_root}"'/registered"; fi
+print -r -- detached-proof'
+env "${authorization_env[@]}" DNIE_WORKFLOW_TEST_AUTHORIZATION_TRANSPORT='' \
+  DNIE_WORKFLOW_SOURCE_APP="${fixture_root}/source.app" \
+  DNIE_WORKFLOW_DESTINATION_APP="${fixture_root}/installed.app" \
+  DNIE_WORKFLOW_ARTIFACT_INSPECTOR="${stub_bin}/inspect-artifact" \
+  /usr/bin/python3 -I - "${workflow}" "${fixture_root}" "${fixture_cdhash}" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+
+workflow, fixture, cdhash = sys.argv[1:]
+trace = Path(fixture, "transport-trace")
+terminal = ["/usr/bin/script", "-q", "/dev/null"]
+
+def run(args, expected_trace, *, detached=False):
+    trace.write_text("")
+    result = subprocess.run(
+        args, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        timeout=20, start_new_session=detached,
+    )
+    observed = trace.read_text().splitlines()
+    if observed != expected_trace:
+        raise SystemExit(
+            f"Expected transport calls {expected_trace}, received {observed}\n"
+            f"{result.stdout}{result.stderr}"
+        )
+    return result
+
+install = run(terminal + [workflow, "install"], [
+    "sudo:authorize", "sudo:install", "sudo:register-securityagent", "sudo:commit-install",
+])
+if install.returncode or "pilot_install=pass" not in install.stdout:
+    raise SystemExit(f"Terminal fixture install failed: {install.stdout}{install.stderr}")
+Path(fixture, "registered").unlink()
+
+recovery = run(terminal + [
+    "/bin/zsh", "-fc", 'exec "$@" </dev/null > /dev/null', "--", workflow,
+    "recover-pending-install", "install.20261120000000.100.200", cdhash,
+], ["sudo:probe-pending-install", "sudo:rollback-pending-install"])
+if recovery.returncode != 1 or "rollback was not authorized" not in recovery.stdout:
+    raise SystemExit(f"Captured recovery proof did not reach guarded rollback: {recovery.stdout}{recovery.stderr}")
+
+gui = run([workflow, "test-authorization"], ["native-gui"], detached=True)
+if gui.returncode or gui.stdout != "detached-proof\n":
+    raise SystemExit("Detached invocation did not preserve native GUI output")
+PY
+
 print "developer_workflow_offline=pass"

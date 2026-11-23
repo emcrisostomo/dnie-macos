@@ -953,8 +953,8 @@ class ReleaseTests(unittest.TestCase):
             "schema": 1,
             **source,
             "scope": "public-binary-release",
-            "version": "0.1.0",
-            "build": "1",
+            "version": "0.1.1",
+            "build": "2",
             "source_rights": True,
             "credential_redistribution": True,
             "apple_notarization_submission": True,
@@ -1013,6 +1013,97 @@ class ReleaseTests(unittest.TestCase):
         identities = '  1) ' + 'A' * 40 + ' "Developer ID Application: Test (Z5X0A1B2C3)"'
         with self.assertRaises(release.ReleaseError):
             release.select_identity(identities, "A" * 40, "Developer ID Application", "X5X0A1B2C3")
+
+    def test_payload_requires_only_the_compiled_host_icon_and_branded_metadata(self):
+        for name, kind in release.payload_paths(False, False).items():
+            if kind == "file":
+                path = self.root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+                path.chmod(int(release.expected_payload_mode(name, kind), 8))
+        host = self.root / "DNIeTokenHost.app/Contents"
+        extension = host / "PlugIns/DNIeTokenExtension.appex/Contents"
+        icon = host / "Resources/AppIcon.icns"
+        catalog = host / "Resources/Assets.car"
+        icon_data = b"icns" + struct.pack(">I", 16) + b"ic07" + struct.pack(">I", 8)
+        catalog_data = b"BOMStore" + bytes(24)
+        icon.write_bytes(icon_data)
+        catalog.write_bytes(catalog_data)
+        common = {
+            "CFBundleShortVersionString": release.CONFIG["version"],
+            "CFBundleVersion": release.CONFIG["build"],
+            "LSMinimumSystemVersion": release.CONFIG["deployment"],
+            "DTXcodeBuild": release.TOOLCHAIN["xcode_build"],
+            "DTSDKName": "macosx" + release.TOOLCHAIN["macos_sdk"],
+            "DTSDKBuild": release.TOOLCHAIN["sdk_build"],
+            "BuildMachineOSBuild": release.TOOLCHAIN["macos_build"],
+        }
+        host_info = {
+            **common, "CFBundleExecutable": "DNIeTokenHost",
+            "CFBundleIdentifier": "org.dniemacos.dnietoken", "CFBundlePackageType": "APPL",
+            "LSUIElement": True, "CFBundleDisplayName": "DNIe Bridge",
+            "CFBundleIconFile": "AppIcon", "CFBundleIconName": "AppIcon",
+        }
+        extension_info = {
+            **common, "CFBundleExecutable": "DNIeTokenExtension",
+            "CFBundleIdentifier": "org.dniemacos.dnietoken.tokenextension",
+            "CFBundlePackageType": "XPC!",
+            "NSExtension": {"NSExtensionPointIdentifier": "com.apple.ctk-tokens",
+                            "NSExtensionAttributes": {
+                                "com.apple.ctk.aid": "A000000063504B43532D3135",
+                                "com.apple.ctk.class-id": "org.dniemacos.dnietoken.token",
+                                "com.apple.ctk.driver-class": "DNIeTokenExtension.TokenDriver",
+                                "com.apple.ctk.token-type": "smartcard",
+                            }},
+        }
+        (host / "Info.plist").write_bytes(plistlib.dumps(host_info))
+        (extension / "Info.plist").write_bytes(plistlib.dumps(extension_info))
+        resource_info = self.root / release.RESOURCES / "Contents/Info.plist"
+        resource_info.write_bytes(plistlib.dumps({"CFBundleIdentifier": "dniecore.DNIeCore.resources"}))
+        tool_output = {
+            "Executable architecture": release.TOOLCHAIN["architecture"],
+            "Mach-O deployment metadata": (
+                f"platform MACOS\nminos {release.CONFIG['deployment']}\n"
+                f"sdk {release.TOOLCHAIN['macos_sdk']}\n"
+            ),
+            "Linked libraries": "executable:\n/usr/lib/libSystem.B.dylib\n",
+        }
+
+        def run(_, *, label):
+            return tool_output[label]
+
+        identity = {"revision": "2" * 40, "tree": "3" * 40}
+        with patch.object(release, "verify_notices"):
+            release.check_payload(self.root, identity, run=run)
+            for file, original, malformed in (
+                (icon, icon_data, icon_data[:-1]),
+                (catalog, catalog_data, b"invalid asset catalog"),
+            ):
+                with self.subTest(file=file.name):
+                    file.write_bytes(malformed)
+                    with self.assertRaisesRegex(release.ReleaseError, "icon resources"):
+                        release.check_payload(self.root, identity, run=run)
+                    file.write_bytes(original)
+            for folder, info, key, bad_value in (
+                (host, host_info, "CFBundleDisplayName", "DNIeTokenHost"),
+                (host, host_info, "CFBundleIconFile", "Other"),
+                (host, host_info, "CFBundleIconName", "Other"),
+                (extension, extension_info, "CFBundleIconName", "AppIcon"),
+            ):
+                with self.subTest(key=key, bundle=folder.parent.name):
+                    plist_path = folder / "Info.plist"
+                    plist_path.write_bytes(plistlib.dumps({**info, key: bad_value}))
+                    with self.assertRaisesRegex(release.ReleaseError, "metadata"):
+                        release.check_payload(self.root, identity, run=run)
+                    plist_path.write_bytes(plistlib.dumps(info))
+            icon.unlink()
+            with self.assertRaisesRegex(release.ReleaseError, "allowlist"):
+                release.check_payload(self.root, identity, run=run)
+            icon.write_bytes(icon_data)
+            extra_icon = extension / "Resources/AppIcon.icns"
+            extra_icon.touch()
+            with self.assertRaisesRegex(release.ReleaseError, "allowlist"):
+                release.check_payload(self.root, identity, run=run)
 
     def test_payload_rejects_unreviewed_embedded_code(self):
         for name, kind in release.payload_paths(False, False).items():
@@ -1162,16 +1253,16 @@ class ReleaseTests(unittest.TestCase):
         metadata = self.root / "PackageInfo"
         package_info = """<pkg-info overwrite-permissions="true" relocatable="false"
           identifier="org.dniemacos.dnietoken.installer" postinstall-action="none"
-          version="0.1.0.1" format-version="2" generator-version="InstallCmds-Test"
+          version="0.1.1.2" format-version="2" generator-version="InstallCmds-Test"
           install-location="/Applications" auth="root">
           <payload numberOfFiles="45" installKBytes="2010"/>
           <bundle id="dniecore.DNIeCore.resources"
             path="./DNIeTokenHost.app/Contents/PlugIns/DNIeTokenExtension.appex/Contents/Resources/DNIeCore_DNIeCore.bundle"/>
           <bundle id="org.dniemacos.dnietoken" path="./DNIeTokenHost.app"
-            CFBundleShortVersionString="0.1.0" CFBundleVersion="1"/>
+            CFBundleShortVersionString="0.1.1" CFBundleVersion="2"/>
           <bundle id="org.dniemacos.dnietoken.tokenextension"
             path="./DNIeTokenHost.app/Contents/PlugIns/DNIeTokenExtension.appex"
-            CFBundleShortVersionString="0.1.0" CFBundleVersion="1"/>
+            CFBundleShortVersionString="0.1.1" CFBundleVersion="2"/>
           <bundle-version><bundle id="org.dniemacos.dnietoken"/></bundle-version>
           <upgrade-bundle><bundle id="org.dniemacos.dnietoken"/></upgrade-bundle>
           <update-bundle/><atomic-update-bundle/>
@@ -1182,7 +1273,7 @@ class ReleaseTests(unittest.TestCase):
         release.check_package_metadata(self.root)
         for altered in (
                 package_info.replace("</upgrade-bundle>", '<bundle id="other"/></upgrade-bundle>'),
-                package_info.replace('CFBundleVersion="1"', 'CFBundleVersion="2"'),
+                package_info.replace('CFBundleVersion="2"', 'CFBundleVersion="3"'),
                 package_info.replace("<relocate/>", "<relocate/><unexpected/>"),
                 package_info.replace('install-location="/Applications"', 'install-location="/tmp"')):
             metadata.write_text(altered)

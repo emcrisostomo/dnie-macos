@@ -38,8 +38,8 @@ class ReleaseError(Exception):
 TOOLCHAIN = {"architecture": "arm64", "xcode": "27.2", "xcode_build": "27B52",
              "macos_sdk": "27.2", "sdk_build": "26B118", "swift": "6.4.2",
              "macos": "27.2.1", "macos_build": "26B131"}
-CONFIG = {"configuration": "Release", "deployment": "26.0", "version": "0.1.0",
-          "build": "1", "app_id": "org.dniemacos.dnietoken",
+CONFIG = {"configuration": "Release", "deployment": "26.0", "version": "0.1.1",
+          "build": "2", "app_id": "org.dniemacos.dnietoken",
           "extension_id": "org.dniemacos.dnietoken.tokenextension",
           "package_id": "org.dniemacos.dnietoken.installer",
           "install_location": "/Applications"}
@@ -49,10 +49,12 @@ EXTENSION = HOST / "Contents/PlugIns/DNIeTokenExtension.appex"
 RESOURCES = EXTENSION / "Contents/Resources/DNIeCore_DNIeCore.bundle"
 ASSETS = RESOURCES / "Contents/Resources/Assets"
 HOST_RESOURCES = HOST / "Contents/Resources"
+HOST_ICON = HOST_RESOURCES / "AppIcon.icns"
+HOST_ASSET_CATALOG = HOST_RESOURCES / "Assets.car"
 SOURCE_REFERENCE = HOST_RESOURCES / "SOURCE.json"
 NOTICE_HASHES = {
     Path("LICENSE"): "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
-    Path("LICENSES/README.md"): "63fdda2f18c23bd1d6672f0d35154f4df82c4c2d765af4fa22aa801e02ff0326",
+    Path("LICENSES/README.md"): "2ae14d90c83ba36283953e7717f5ffbe0d88467f3b25a1e13ee37a60a0c9b024",
     Path("LICENSES/OpenSC-LGPL-2.1.txt"): "376b54d4c5f4aa99421823fa4da93e3ab73096fce2400e89858632aa7da24a14",
     Path("LICENSES/OpenSC-resource.md"): "9857b5d2cd4327ef9f17e0204a5d2634df0d5953f725a16d1c05dc000d0e7b4a",
 }
@@ -80,7 +82,7 @@ BUILD_INPUTS = ("DNIeToken.xcodeproj", "HostApp", "TokenExtension",
                 "Packages/DNIeCore/Package.swift", "Packages/DNIeCore/Sources", str(STAGE_SCRIPT),
                 str(CREDENTIAL_FORMAT), *(str(path) for path in NOTICE_HASHES))
 # Reviewed public runtime tree. Change only after source and generated payload review.
-BUILD_INPUT_TREE_SHA256 = "42c23b13864bf4b4adf030a93171975828c62e866a26477f95c9597b2fe9722f"
+BUILD_INPUT_TREE_SHA256 = "c7a9896e4e011231bcf8e13309a9af5b2b979d57908ef261ee09bf98323dce72"
 MANIFEST = "manifest.json"
 NOTARY_STATE = "notary-state.json"
 SUBMISSION = "submission.pkg"
@@ -834,7 +836,7 @@ def verify_credential_sources(root, contents, fixture_hash):
 def payload_paths(credential, signed):
     files = {
         HOST / "Contents/Info.plist", HOST / "Contents/PkgInfo",
-        HOST / "Contents/MacOS/DNIeTokenHost",
+        HOST / "Contents/MacOS/DNIeTokenHost", HOST_ICON, HOST_ASSET_CATALOG,
         EXTENSION / "Contents/Info.plist", EXTENSION / "Contents/MacOS/DNIeTokenExtension",
         RESOURCES / "Contents/Info.plist", ASSETS / "README.md", SOURCE_REFERENCE,
         *(HOST_RESOURCES / relative for relative in NOTICE_HASHES),
@@ -873,6 +875,13 @@ def check_payload(root, identity, *, fixture_hash=None, signed=False, run=comman
     if any(item["mode"] != expected_payload_mode(name, item["type"])
            for name, item in contents.items()):
         raise ReleaseError("Payload node mode does not match release policy.")
+    with (root / HOST_ICON).open("rb") as icon, (root / HOST_ASSET_CATALOG).open("rb") as catalog:
+        icon_header = icon.read(8)
+        icon_size = os.fstat(icon.fileno()).st_size
+        if (icon_header[:4] != b"icns" or icon_size <= 8
+                or int.from_bytes(icon_header[4:], "big") != icon_size
+                or catalog.read(8) != b"BOMStore" or os.fstat(catalog.fileno()).st_size <= 8):
+            raise ReleaseError("Compiled host icon resources have unexpected headers or sizes.")
     verify_notices(root, contents, identity)
     if fixture_hash is not None:
         verify_credential_sources(root, contents, fixture_hash)
@@ -889,8 +898,13 @@ def check_payload(root, identity, *, fixture_hash=None, signed=False, run=comman
                     "BuildMachineOSBuild": TOOLCHAIN["macos_build"]}
         if any(info.get(key) != value for key, value in expected.items()):
             raise ReleaseError("Host or extension metadata differs from the release configuration.")
-        if bundle == HOST and info.get("LSUIElement") is not True:
-            raise ReleaseError("Host interface metadata is unexpected.")
+        if bundle == HOST and (info.get("LSUIElement") is not True
+                               or info.get("CFBundleDisplayName") != "DNIe Bridge"
+                               or info.get("CFBundleIconFile") != "AppIcon"
+                               or info.get("CFBundleIconName") != "AppIcon"):
+            raise ReleaseError("Host interface or icon metadata is unexpected.")
+        if bundle == EXTENSION and {"CFBundleIconFile", "CFBundleIconName"} & info.keys():
+            raise ReleaseError("Smart Card Token Extension has unexpected icon metadata.")
         if bundle == EXTENSION and info.get("NSExtension") != {
                 "NSExtensionPointIdentifier": "com.apple.ctk-tokens",
                 "NSExtensionAttributes": {"com.apple.ctk.aid": "A000000063504B43532D3135",

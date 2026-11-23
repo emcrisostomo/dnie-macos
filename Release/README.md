@@ -10,7 +10,7 @@ removal require separate target validation. This package does not provide an uni
 Use a clean checkout of the reviewed source, an arm64 Mac running macOS 27.2.1 build 26B131,
 Xcode 27.2 build 27B52, the macOS 27.2 SDK build 26B118, Apple Swift 6.4.2 and Python 3.9 or later. Select the pinned Xcode with
 `xcode-select` before running. Both the app and the extension are configured for version
-`0.1.0`, build `1`.
+`0.1.1`, build `2`.
 
 ```sh
 export DNIERELEASE_REVISION="$(git rev-parse HEAD)"
@@ -165,8 +165,8 @@ fingerprints use uppercase hex.
   "scope": "public-binary-release",
   "revision": "<full Git commit ID>",
   "tree": "<full Git tree ID>",
-  "version": "0.1.0",
-  "build": "1",
+  "version": "0.1.1",
+  "build": "2",
   "source_rights": true,
   "credential_redistribution": true,
   "apple_notarization_submission": true,
@@ -234,3 +234,26 @@ package must also be included in that approved source delivery; no values need e
 Git. Verify source access before approving publication of any binary. "Limited" or
 "restricted-scope" here describes selecting the 18 fields, never additional restrictions on
 recipients' GPL rights.
+
+
+## Development installation authorization and diagnostics
+
+Run `make install` as your normal user. The workflow selects its authorization
+method once. A controlling Terminal uses `sudo` and its normal policy-managed
+authorization ticket across installation phases. Password prompts can recur if
+that policy or ticket expiry requires them. Without a controlling terminal, the
+existing native administrator dialogs require the active console user; separate
+privileged phases can still request separate authorization. No password is
+collected or stored by DNIe Bridge.
+
+`make card-info` builds a small standalone diagnostic with an ad-hoc smart-card
+entitlement; it needs Xcode but no terminal-data fixture or Apple signing identity.
+It reports CTK reader-slot/card snapshots and separately observes native key
+references matching fixed DNIe role labels in the Data Protection keychain,
+with interaction disabled and no legacy-keychain fallback. It never
+opens a smart-card session, sends an APDU, requests a PIN or signs data. It does
+not establish ownership of a particular inserted card or prove authentication.
+No reader names, ATRs, holder data, token IDs or key material are printed. Exit0
+means the observation completed, including no-reader/no-card results; errors or
+indeterminate observations return nonzero. Temporary build output is private
+and disposed after the command; offline tests are included in `make check`.

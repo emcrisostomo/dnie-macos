@@ -261,13 +261,26 @@ require_app_inactive() {
   done
 }
 
+run_with_lifecycle_transport() {
+  local lifecycle_transport
+  # sudo can use the controlling terminal even when a phase captures or redirects output.
+  if [[ "${test_mode}" == 1 && -n "${DNIE_WORKFLOW_TEST_AUTHORIZATION_TRANSPORT:-}" ]]; then
+    lifecycle_transport="${DNIE_WORKFLOW_TEST_AUTHORIZATION_TRANSPORT}"
+  elif ( : </dev/tty ) 2>/dev/null; then
+    lifecycle_transport=sudo
+  else
+    lifecycle_transport=native-gui
+  fi
+  "$@"
+}
+
 run_root_lifecycle() {
   local root_helper="$(test_override DNIE_WORKFLOW_ROOT_HELPER "${script_dir}/pilot-lifecycle-root.sh")"
   if [[ "${test_mode}" == 1 && "${DNIE_WORKFLOW_TEST_EXERCISE_AUTHORIZATION_TRANSPORT:-0}" != 1 ]]; then
     if [[ "${DNIE_WORKFLOW_TEST_REFUSE_ROOT_COMMAND:-}" == "${1:-}" ]]; then return 77; fi
     "${root_helper}" "$@"
   else
-    local inspector_source="${script_dir}/inspect-pilot-artifact.sh" helper_digest inspector_digest invoking_uid transport
+    local inspector_source="${script_dir}/inspect-pilot-artifact.sh" helper_digest inspector_digest invoking_uid
     local bootstrap_payload privileged_command apple_command argument
     local -a privileged_arguments
     helper_digest="$(/usr/bin/shasum -a 256 "${root_helper}" | /usr/bin/cut -d ' ' -f 1)"
@@ -325,14 +338,7 @@ run_root_lifecycle() {
     # BOOTSTRAP_PAYLOAD_END
     privileged_arguments=(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/zsh -f -c "${bootstrap_payload}" -- "${root_helper}" "${inspector_source}" \
       "${helper_digest}" "${inspector_digest}" "${invoking_uid}" "$@")
-    if [[ "${test_mode}" == 1 ]]; then
-      transport="${DNIE_WORKFLOW_TEST_AUTHORIZATION_TRANSPORT:-native-gui}"
-    elif [[ -t 0 && -t 1 ]]; then
-      transport=sudo
-    else
-      transport=native-gui
-    fi
-    case "${transport}" in
+    case "${lifecycle_transport}" in
       sudo)
         if [[ "${test_mode}" == 1 ]]; then "$(tool sudo)" "${privileged_arguments[@]}"
         else /usr/bin/sudo "${privileged_arguments[@]}"; fi
@@ -684,14 +690,14 @@ case "${command_name}" in
   help) print_help ;;
   check) run_check ;;
   build) run_build ;;
-  install) run_install ;;
+  install) run_with_lifecycle_transport run_install ;;
   status) run_status ;;
-  uninstall) run_uninstall ;;
-  recover-pending-install) run_recover_pending_install "$2" "$3" ;;
+  uninstall) run_with_lifecycle_transport run_uninstall ;;
+  recover-pending-install) run_with_lifecycle_transport run_recover_pending_install "$2" "$3" ;;
   finish-source-restoration) run_finish_source_restoration "$2" ;;
   test-authorization)
     [[ "${test_mode}" == 1 ]] || fail "unknown developer workflow command: ${command_name}" 64
-    run_root_lifecycle authorize "${DNIE_WORKFLOW_TEST_AUTHORIZATION_TOKEN:-authorization.test}"
+    run_with_lifecycle_transport run_root_lifecycle authorize "${DNIE_WORKFLOW_TEST_AUTHORIZATION_TOKEN:-authorization.test}"
     ;;
   test-registration-version)
     [[ "${test_mode}" == 1 && "$#" == 3 ]] || fail "unknown developer workflow command: ${command_name}" 64
