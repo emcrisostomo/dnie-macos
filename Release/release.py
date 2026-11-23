@@ -82,7 +82,7 @@ BUILD_INPUTS = ("DNIeToken.xcodeproj", "HostApp", "TokenExtension",
                 "Packages/DNIeCore/Package.swift", "Packages/DNIeCore/Sources", str(STAGE_SCRIPT),
                 str(CREDENTIAL_FORMAT), *(str(path) for path in NOTICE_HASHES))
 # Reviewed public runtime tree. Change only after source and generated payload review.
-BUILD_INPUT_TREE_SHA256 = "c7a9896e4e011231bcf8e13309a9af5b2b979d57908ef261ee09bf98323dce72"
+BUILD_INPUT_TREE_SHA256 = "0214a740e0a25630fa167de85f11e1e8698a59f2053910c4f172067c3aed74ab"
 MANIFEST = "manifest.json"
 NOTARY_STATE = "notary-state.json"
 SUBMISSION = "submission.pkg"
