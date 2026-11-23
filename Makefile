@@ -22,6 +22,7 @@ check:
 	@$(WORKFLOW) check
 	@Validation/Product/Scripts/test-build-development-slot.sh
 	@Validation/Product/Scripts/test-developer-workflow.sh
+	@Validation/Product/Scripts/test-clean-development.sh
 	@Validation/Product/Scripts/test-pilot-lifecycle.sh
 	@Validation/Product/Scripts/test-pilot-upgrade-root.sh
 	@Validation/Product/Scripts/test-pilot-lifecycle-privileged-static.sh
@@ -46,6 +47,7 @@ card-info:
 test:
 	@Validation/Product/Scripts/test-build-development-slot.sh
 	@Validation/Product/Scripts/test-developer-workflow.sh
+	@Validation/Product/Scripts/test-clean-development.sh
 	@Validation/Product/Scripts/test-pilot-lifecycle.sh
 	@Validation/Product/Scripts/test-pilot-upgrade-root.sh
 	@Validation/Product/Scripts/test-pilot-lifecycle-privileged-static.sh

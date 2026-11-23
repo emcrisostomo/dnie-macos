@@ -35,7 +35,7 @@ fail() {
 }
 
 require_normal_user() {
-  (( EUID != 0 )) || fail "Do not run build or status through sudo/root; signing, private-fixture staging, DerivedData, and registration inspection belong to the invoking user."
+  (( EUID != 0 )) || fail "Do not run the development workflow through sudo/root; signing, private-fixture staging, DerivedData, and registration inspection belong to the invoking user."
 }
 
 resolve_signing_identity() {
@@ -157,6 +157,39 @@ run_build() {
   "${build_script}" --check-build-slot >/dev/null
   run_build_preflight
   DNIE_SIGNING_IDENTITY_SHA1="${signing_identity}" "${build_script}"
+}
+
+development_cleanup_tool() {
+  local -a arguments=()
+  if [[ "${test_mode}" == 1 ]]; then
+    arguments=(--fixture "${repository_root}" "${bin_dir}")
+  fi
+  /usr/bin/python3 -B "${script_dir}/clean-development.py" "${arguments[@]}" "$@"
+}
+
+run_clean() {
+  require_normal_user
+  development_cleanup_tool
+}
+
+hold_development_lock() {
+  require_normal_user
+  # The helper validates the inherited directory and locks its shared open file
+  # description. This shell keeps the descriptor through lifecycle postflight.
+  exec {development_lock_fd}<"${repository_root}"
+  development_cleanup_tool --lock "${development_lock_fd}"
+}
+
+restore_missing_development_app() {
+  local app="$1" expected="$2"
+  [[ ! -e "${app}" && ! -L "${app}" ]] || return 0
+  [[ "${app}" == "${repository_root}/DerivedData/T067/Build/Products/Release/DNIeTokenHost.app" ]] || return 0
+  development_cleanup_tool --restore "${development_lock_fd}" "${expected}"
+}
+
+prune_completed_development_app() {
+  development_cleanup_tool --prune "${development_lock_fd}" "${1:l}" ||
+    print -u2 'The exact recovery cache entry was retained for explicit review.'
 }
 
 artifact_cdhash() {
@@ -394,10 +427,6 @@ restore_development_source_registration() {
   destination_app="$(test_override DNIE_WORKFLOW_DESTINATION_APP /Applications/DNIeTokenHost.app)"
   source_extension="${source_app}/Contents/PlugIns/DNIeTokenExtension.appex"
 
-  observed="$(artifact_cdhash "${source_app}")" ||
-    fail "The retained development source failed exact restoration inspection."
-  [[ "${observed:l}" == "${expected}" ]] ||
-    fail "The retained development source identity differs from the authorized identity."
   [[ ! -e "${destination_app}" && ! -L "${destination_app}" ]] ||
     fail "Source registration restoration requires the installed production path to remain absent."
   require_app_inactive "${source_app}"
@@ -405,6 +434,12 @@ restore_development_source_registration() {
   snapshot="$(registration_snapshot)" ||
     fail "Unable to inspect registration before source restoration."
   require_no_registration "${snapshot}"
+  restore_missing_development_app "${source_app}" "${expected}" ||
+    fail "The exact cached development source could not be restored."
+  observed="$(artifact_cdhash "${source_app}")" ||
+    fail "The retained development source failed exact restoration inspection."
+  [[ "${observed:l}" == "${expected}" ]] ||
+    fail "The retained development source identity differs from the authorized identity."
 
   # Recheck every mutable boundary immediately before the documented development-only add.
   [[ "$(artifact_cdhash "${source_app}")" == "${expected}" ]] ||
@@ -436,6 +471,7 @@ restore_development_source_registration() {
 run_finish_source_restoration() {
   require_normal_user
   restore_development_source_registration "$1"
+  prune_completed_development_app "$1"
   print 'development_source_registration_restoration=pass'
   print 'installed_registration=absent'
   print 'source_registration=exact-singleton'
@@ -501,6 +537,7 @@ run_install() {
   fi
   root_pending=0
   trap - INT TERM HUP
+  prune_completed_development_app "${cdhash}"
   print "pilot_install=pass"
   print "source_registration_isolated=${source_isolated}"
 }
@@ -516,6 +553,8 @@ run_recover_pending_install() {
   destination_app="$(test_override DNIE_WORKFLOW_DESTINATION_APP /Applications/DNIeTokenHost.app)"
   source_extension="${source_app}/Contents/PlugIns/DNIeTokenExtension.appex"
   installed_extension="${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex"
+  restore_missing_development_app "${source_app}" "${expected}" ||
+    fail "The exact cached development source could not be restored."
   observed="$(artifact_cdhash "${source_app}")" || fail "The retained source artifact failed exact recovery inspection."
   [[ "${observed:l}" == "${expected}" ]] || fail "The retained source artifact identity differs from the authorized recovery identity."
   if observed="$(artifact_cdhash "${destination_app}")"; then
@@ -582,6 +621,7 @@ run_recover_pending_install() {
   [[ ! -e "${destination_app}" && ! -L "${destination_app}" &&
      "$(artifact_cdhash "${source_app}")" == "${expected}" ]] ||
     fail "The final pending-install recovery topology changed unexpectedly."
+  prune_completed_development_app "${expected}"
   print 'pending_install_recovery=pass'
   print "retained_recovery=${expected_archive}"
   print 'installed_registration=absent'
@@ -669,11 +709,12 @@ print_help() {
   print '  install   Verify and publish a fresh exact-owned local pilot app'
   print '  status    Inspect installed-path and registration state without card/private operations'
   print '  test      Run offline dispatch and safety fixtures'
+  print '  clean     Remove the selected development build slot when its safety checks pass'
   print ''
   print 'Set DNIE_SIGNING_IDENTITY_SHA1 to one valid Apple Development SHA-1 when auto-selection is ambiguous.'
   print '  uninstall Withdraw only the exact-owned pilot app into retained recovery'
   print '  finish-source-restoration CDHASH  Restore only the exact development row after an independently audited consumed recovery'
-  print 'upgrade, disable, enable, and clean remain intentionally unsupported.'
+  print 'upgrade, disable, and enable remain intentionally unsupported.'
 }
 
 command_name="${1:-help}"
@@ -686,6 +727,9 @@ elif [[ "${command_name}" == test-registration-version && "${test_mode}" == 1 ]]
 else
   [[ "$#" -le 1 ]] || fail "usage: ${0:t} [help|check|build|install|status|upgrade|uninstall|disable|enable|clean]" 64
 fi
+case "${command_name}" in
+  install|uninstall|recover-pending-install|finish-source-restoration) hold_development_lock ;;
+esac
 case "${command_name}" in
   help) print_help ;;
   check) run_check ;;
@@ -706,7 +750,8 @@ case "${command_name}" in
       fail "The registration is not one exact path/version row."
     print 'registration_path_version=pass'
     ;;
-  upgrade|disable|enable|clean)
+  clean) run_clean ;;
+  upgrade|disable|enable)
     fail "${command_name} is not accepted: the generic lifecycle procedure has not passed T030/U-12. Use no evidence-specific cleanup helper as a product command." 2
     ;;
   *) fail "unknown developer workflow command: ${command_name}" 64 ;;

@@ -257,3 +257,36 @@ No reader names, ATRs, holder data, token IDs or key material are printed. Exit0
 means the observation completed, including no-reader/no-card results; errors or
 indeterminate observations return nonzero. Temporary build output is private
 and disposed after the command; offline tests are included in `make check`.
+
+
+## Development build cleanup
+
+Run `make clean` as your normal user to remove the selected development build
+slot (default `DerivedData/T067`). Running it again when absent succeeds. The
+existing `DNIE_DEVELOPMENT_BUILD_SLOT` selection also supports
+`T083CleanIncremental` and `T083Upgrade`; cleanup affects only that slot, not
+all DerivedData, release output, prepared inputs, or the installed app.
+
+The command checks ownership, links, permissions, active use and PlugInKit
+source registrations before deleting anything. A source registration or active
+process must be resolved through its owning lifecycle procedure first; cleanup
+does not unregister or terminate it. Managed build and lifecycle operations
+share a per-checkout lock with cleanup. Unsafe or changing trees fail closed;
+validated output is renamed before deletion so an interruption leaves the build
+slot reusable. If deletion fails, the command reports a private `.retired-*`
+entry in the same parent directory. That entry remains for explicit review;
+a later cleanup does not sweep unrelated or interrupted output.
+
+An interrupted installation can require the exact signed development app. When
+lifecycle state exists, cleanup and a subsequent build preserve an eligible
+signed source app under the Git-ignored, owner-only
+`Validation/private/DevelopmentRecovery` directory. This is local recovery
+state containing the same provisioned resource as that app, not a source or
+release artifact. Existing pending-install recovery and source-restoration
+commands can restore the expected app only to its missing original T067 path.
+They never overwrite a newer or mismatched app, and still require the original
+signature, identity and lifecycle authorization checks. Keep retained recovery
+state until the corresponding lifecycle procedure succeeds. Only an exact
+matching entry with a reverified original source is automatically disposed at
+that successful gate; other entries require explicit dependency review. Do not
+manually delete recovery state to force a failed install or cleanup to proceed.

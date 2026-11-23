@@ -95,6 +95,18 @@ To uninstall the development build installed by this workflow:
 make uninstall
 ```
 
+## Clean build output
+
+```sh
+make clean
+```
+
+Removes the development build output without uninstalling the app or removing
+prepared terminal data. No administrator password is needed. Any exact signed
+app needed for interrupted-install recovery is retained privately outside the
+build directory. See the [release guide](Release/README.md#development-build-cleanup)
+for recovery and alternate build slots.
+
 ## Reader and card information
 
 ```sh

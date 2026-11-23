@@ -130,7 +130,7 @@ grep -q '^environment_evidence_match=unknown$' "${fixture_root}/mismatch.out"
 grep -q 'recorded product evidence environment' "${fixture_root}/mismatch.err"
 grep -q 'observed_macos_version=27.0.1' "${fixture_root}/mismatch.err"
 
-for command in upgrade disable enable clean; do
+for command in upgrade disable enable; do
   if env "${common_env[@]}" "${workflow}" "${command}" >"${fixture_root}/${command}.out" 2>"${fixture_root}/${command}.err"; then
     print -u2 "unsupported_command_accepted=${command}"
     exit 4

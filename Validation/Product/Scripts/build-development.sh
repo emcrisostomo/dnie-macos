@@ -34,6 +34,14 @@ esac
 derived_data_root="${repository_root}/DerivedData"
 derived_data="${derived_data_root}/${build_slot}"
 
+cleanup_tool="${script_dir}/clean-development.py"
+if (( $# == 0 )); then
+  # Let xcodebuild inherit the repository lock. It may still write if this
+  # wrapper exits unexpectedly while the child remains active.
+  exec {development_lock_fd}<"${repository_root}"
+  /usr/bin/python3 -B "${cleanup_tool}" --lock "${development_lock_fd}"
+fi
+
 require_invoking_user_directory_or_absence() {
   local candidate_path="$1"
   local label="$2"
@@ -139,6 +147,7 @@ if [[ "${1:-}" == --check-signing ]]; then
 fi
 [[ "$#" -eq 0 ]] || exit 64
 
+/usr/bin/python3 -B "${cleanup_tool}" --preserve "${development_lock_fd}"
 "${repository_root}/Validation/Scripts/stage-production-credential-asset.sh"
 if ! git -C "${repository_root}" check-ignore --quiet "${credential_asset}"; then
   print -u2 "The development credential asset is not ignored; refusing the build."
