@@ -107,7 +107,17 @@ write_stub sleep 'exit 0'
 write_stub pluginkit '
 state="'"${fixture_root}"'/registration"
 [[ ! -f "'"${fixture_root}"'/registration-query.fail" ]] || exit 71
-if [[ "${1:-}" == -r ]]; then print -r -- "remove=${2:-}" >> "'"${fixture_root}"'/events"; /bin/rm -f -- "$state"; [[ ! -f "'"${fixture_root}"'/fail-query-after-remove" ]] || touch "'"${fixture_root}"'/registration-query.fail"; exit 0; fi
+if [[ "${1:-}" == -r ]]; then
+  print -r -- "remove=${2:-}" >> "'"${fixture_root}"'/events"
+  if [[ "${DNIE_WORKFLOW_TEST_FAIL_SOURCE_WITHDRAWAL:-0}" == 1 &&
+        "$2" == "'"${source_app}"'/Contents/PlugIns/DNIeTokenExtension.appex" ]]; then exit 72; fi
+  if [[ -f "$state" ]]; then
+    /usr/bin/awk -v target="$2" "target != \$0" "$state" > "$state.new"
+    if [[ -s "$state.new" ]]; then /bin/mv "$state.new" "$state"; else /bin/rm -f -- "$state" "$state.new"; fi
+  fi
+  [[ ! -f "'"${fixture_root}"'/fail-query-after-remove" ]] || touch "'"${fixture_root}"'/registration-query.fail"
+  exit 0
+fi
 if [[ "${1:-}" == -a ]]; then
   print -r -- "add=${2:-}" >> "'"${fixture_root}"'/events"
   [[ ! -f "'"${fixture_root}"'/add.fail" ]] || exit 72
@@ -142,8 +152,16 @@ print -r -- "$app/Contents/PlugIns/DNIeTokenExtension.appex" > "'"${fixture_root
 write_stub securityagent 'exit 0'
 write_stub root-helper-wrapper '
 actual="'"${root_helper}"'"
+print -r -- "root=${1:-}" >> "'"${fixture_root}"'/events"
+if [[ "${1:-}" == remove-pilot && "${DNIE_WORKFLOW_TEST_SWAP_APP_BEFORE_REMOVAL:-0}" == 1 ]]; then
+  /bin/mv "'"${destination_app}"'" "'"${fixture_root}"'/original.app"
+  /usr/bin/ditto "'"${fixture_root}"'/original.app" "'"${destination_app}"'"
+fi
 "$actual" "$@"
 helper_status=$?
+if [[ "$helper_status" == 0 && "${1:-}" == publish-pilot && "${DNIE_WORKFLOW_TEST_AUTO_REGISTER_INSTALLED:-0}" == 1 ]]; then
+  print -r -- "'"${destination_app}"'/Contents/PlugIns/DNIeTokenExtension.appex" >> "'"${fixture_root}"'/registration"
+fi
 if [[ "$helper_status" == 0 && "${1:-}" == register-securityagent ]]; then
   print -r -- securityagent >> "'"${fixture_root}"'/events"
   print -r -- "'"${destination_app}"'/Contents/PlugIns/DNIeTokenExtension.appex" > "'"${fixture_root}"'/registration"
@@ -312,6 +330,73 @@ for registration_case in wrong-version duplicate malformed; do
   print -r -- "${source_app}/Contents/PlugIns/DNIeTokenExtension.appex" > "${fixture_root}/registration"
 done
 
+# An unregistered but exactly owned publication remains uninstallable.
+if env "${common_env[@]}" DNIE_WORKFLOW_TEST_REFUSE_ROOT_COMMAND=register-securityagent \
+    "${workflow}" install >"${fixture_root}/partial-install.out" 2>"${fixture_root}/partial-install.err"; then
+  print -u2 'Install succeeded despite refused registration.'
+  exit 80
+fi
+grep -qx 'installed_app=present' "${fixture_root}/partial-install.err"
+grep -qx 'provider_registration=absent' "${fixture_root}/partial-install.err"
+[[ -d "${destination_app}" && ! -e "${fixture_root}/registration" ]]
+env "${common_env[@]}" "${workflow}" status > "${fixture_root}/partial-status.out"
+grep -qx 'installed_artifact=verified' "${fixture_root}/partial-status.out"
+grep -qx 'installed_app=present' "${fixture_root}/partial-status.out"
+grep -qx 'provider_registration=absent' "${fixture_root}/partial-status.out"
+original_identity="$(stat -f '%d:%i' "${destination_app}")"
+if env "${common_env[@]}" DNIE_WORKFLOW_TEST_SWAP_APP_BEFORE_REMOVAL=1 \
+    "${workflow}" uninstall >/dev/null 2>"${fixture_root}/swapped-app.err"; then exit 80; fi
+grep -q 'installed app identity changed since it was observed' "${fixture_root}/swapped-app.err"
+grep -qx 'installed_app=present' "${fixture_root}/swapped-app.err"
+[[ -d "${destination_app}" && -f "${state_root}/installed.state" &&
+   "$(stat -f '%d:%i' "${destination_app}")" != "${original_identity}" &&
+   "$(stat -f '%d:%i' "${fixture_root}/original.app")" == "${original_identity}" ]]
+cmp "${destination_app}/Contents/Resources/pilot-artifact-metadata" "${fixture_root}/original.app/Contents/Resources/pilot-artifact-metadata"
+rm -rf -- "${destination_app}"
+mv "${fixture_root}/original.app" "${destination_app}"
+env "${common_env[@]}" "${workflow}" uninstall | grep -qx 'pilot_uninstall=pass'
+[[ ! -e "${destination_app}" && ! -e "${state_root}/installed.state" ]]
+[[ -z "$(find "${state_root}/transactions" -mindepth 1 -print 2>/dev/null || true)" ]]
+
+# The developer can reuse the same build after clearing the partial state.
+env "${common_env[@]}" "${workflow}" status > "${fixture_root}/recovery-absent-status.out"
+grep -qx 'installed_app=absent' "${fixture_root}/recovery-absent-status.out"
+grep -qx 'provider_registration=absent' "${fixture_root}/recovery-absent-status.out"
+env "${common_env[@]}" "${workflow}" install | grep -qx 'pilot_install=pass'
+env "${common_env[@]}" "${workflow}" status > "${fixture_root}/recovery-healthy-status.out"
+grep -qx 'installed_artifact=verified' "${fixture_root}/recovery-healthy-status.out"
+grep -qx 'installed_app=present' "${fixture_root}/recovery-healthy-status.out"
+grep -qx 'provider_registration=exact-installed' "${fixture_root}/recovery-healthy-status.out"
+env "${common_env[@]}" "${workflow}" uninstall | grep -qx 'pilot_uninstall=pass'
+[[ ! -e "${destination_app}" && ! -e "${state_root}/installed.state" &&
+   ! -e "${fixture_root}/registration" ]]
+[[ -z "$(find "${state_root}/transactions" -mindepth 1 -print 2>/dev/null || true)" ]]
+
+# If the source withdrawal fails, uninstall removes only the installed row
+# and app, preserving the independently verified Xcode registration.
+for auto_register in 0 1; do
+  print -r -- "${source_app}/Contents/PlugIns/DNIeTokenExtension.appex" > "${fixture_root}/registration"
+  if env "${common_env[@]}" DNIE_WORKFLOW_TEST_AUTO_REGISTER_INSTALLED="${auto_register}" \
+      DNIE_WORKFLOW_TEST_FAIL_SOURCE_WITHDRAWAL=1 "${workflow}" install \
+      >/dev/null 2>"${fixture_root}/source-withdrawal.err"; then exit 80; fi
+  grep -q 'exact build-tree registration could not be withdrawn' "${fixture_root}/source-withdrawal.err"
+  [[ -d "${destination_app}" && "$(wc -l <"${fixture_root}/registration" | tr -d ' ')" -eq $(( auto_register + 1 )) ]]
+  if (( auto_register )); then
+    if env "${common_env[@]}" "${workflow}" status >"${fixture_root}/dual-status.out"; then exit 80; fi
+    grep -qx 'provider_registration=exact-both' "${fixture_root}/dual-status.out"
+  fi
+  : > "${fixture_root}/events"
+  env "${common_env[@]}" "${workflow}" uninstall >"${fixture_root}/source-only-uninstall.out"
+  grep -qx 'pilot_uninstall=pass' "${fixture_root}/source-only-uninstall.out"
+  grep -qx 'provider_registration=exact-source' "${fixture_root}/source-only-uninstall.out"
+  [[ ! -e "${destination_app}" && ! -e "${state_root}/installed.state" &&
+     "$(<"${fixture_root}/registration")" == "${source_app}/Contents/PlugIns/DNIeTokenExtension.appex" ]]
+  ! grep -qx "remove=${source_app}/Contents/PlugIns/DNIeTokenExtension.appex" "${fixture_root}/events"
+  if (( auto_register )); then
+    grep -qx "remove=${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex" "${fixture_root}/events"
+  fi
+done
+
 # Fresh install accepts and isolates only the exact verified build-tree registration.
 : > "${fixture_root}/events"
 print -r -- "${source_app}/Contents/PlugIns/DNIeTokenExtension.appex" > "${fixture_root}/registration"
@@ -326,19 +411,29 @@ for inactivity_case in host.active provider.active pgrep.fail; do
   fi
   rm "${fixture_root}/${inactivity_case}"
   [[ "$(<"${fixture_root}/registration")" == "${install_registration_before}" &&
-     ! -e "${destination_app}" && ! -e "${state_root}" && ! -s "${fixture_root}/events" ]] || exit 802
+     ! -e "${destination_app}" && ! -e "${state_root}/installed.state" ]] || exit 802
+  ! grep -Eq '^(root=|remove=|add=|securityagent$)' "${fixture_root}/events"
 done
-if env "${common_env[@]}" DNIE_WORKFLOW_TEST_REFUSE_ROOT_COMMAND=authorize "${workflow}" install \
+if env "${common_env[@]}" DNIE_WORKFLOW_TEST_REFUSE_ROOT_COMMAND=publish-pilot "${workflow}" install \
     >/dev/null 2>"${fixture_root}/authorization-refused.err"; then exit 81; fi
-grep -q 'source registration was not changed' "${fixture_root}/authorization-refused.err"
+grep -q 'authorized app publication did not complete' "${fixture_root}/authorization-refused.err"
 [[ "$(<"${fixture_root}/registration")" == "${source_app}/Contents/PlugIns/DNIeTokenExtension.appex" &&
-   ! -e "${destination_app}" && ! -e "${state_root}" ]]
-env "${common_env[@]}" "${workflow}" install > "${fixture_root}/install.out"
+   ! -e "${destination_app}" && ! -e "${state_root}/installed.state" ]]
+env "${common_env[@]}" DNIE_WORKFLOW_TEST_AUTO_REGISTER_INSTALLED=1 "${workflow}" install > "${fixture_root}/install.out"
 grep -q '^pilot_install=pass$' "${fixture_root}/install.out"
 grep -q '^source_registration_isolated=1$' "${fixture_root}/install.out"
+env "${common_env[@]}" "${workflow}" status >"${fixture_root}/installed-status.out"
+grep -qx 'provider_registration=exact-installed' "${fixture_root}/installed-status.out"
+grep -qx 'installed_provider_visibility=pass' "${fixture_root}/installed-status.out"
 grep -q '^actor=_securityagent$' "${fixture_root}/securityagent-invocation"
 grep -qx "host=${destination_app}/Contents/MacOS/DNIeTokenHost" "${fixture_root}/securityagent-invocation"
-/usr/bin/awk '$0=="securityagent"{seen=1;next} seen&&$0=="registration-query"{found=1} END{exit !found}' "${fixture_root}/events"
+/usr/bin/awk '
+  $0=="root=publish-pilot" { published=NR }
+  /^remove=/ { withdrawn=NR }
+  $0=="securityagent" { registered=NR }
+  registered && $0=="registration-query" { observed=NR }
+  END { exit !(published && published < withdrawn && withdrawn < registered && registered < observed) }
+' "${fixture_root}/events"
 ! grep -q '^open-destination$' "${fixture_root}/events"
 [[ -d "${destination_app}" && -d "${source_app}" ]]
 [[ "$(stat -f %Lp "${destination_app}")" == 755 && "$(stat -f %u "${destination_app}")" == "${EUID}" ]]
@@ -348,24 +443,12 @@ grep -qx "host=${destination_app}/Contents/MacOS/DNIeTokenHost" "${fixture_root}
 [[ "$(stat -f %Lp "${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex/Contents/Resources/DNIeCore_DNIeCore.bundle/Contents/Resources/Assets/generation2.json")" == 444 ]]
 grep -q '^phase=committed$' "${fixture_root}/Library/Application Support/org.dniemacos.dnietoken/pilot-lifecycle/installed.state"
 
-# The pending-only recovery entry points refuse a committed install and commit-intent topology.
-committed_token="$(sed -n 's/^token=//p' "${state_root}/installed.state")"
-if env "${common_env[@]}" "${root_helper}" probe-pending-install "${committed_token}" "${cdhash}" >/dev/null 2>&1; then exit 84; fi
-if env "${common_env[@]}" "${root_helper}" rollback-pending-install "${committed_token}" "${cdhash}" >/dev/null 2>&1; then exit 85; fi
-[[ -d "${destination_app}" ]] && grep -q '^phase=committed$' "${state_root}/installed.state"
-print 'phase=commit-install-intent' > "${state_root}/transactions/${committed_token}/transaction.state"
-chmod 600 "${state_root}/transactions/${committed_token}/transaction.state"
-if env "${common_env[@]}" "${root_helper}" probe-pending-install "${committed_token}" "${cdhash}" >/dev/null 2>&1; then exit 87; fi
-if env "${common_env[@]}" "${root_helper}" rollback-pending-install "${committed_token}" "${cdhash}" >/dev/null 2>&1; then exit 88; fi
-print 'phase=installed' > "${state_root}/transactions/${committed_token}/transaction.state"
-chmod 600 "${state_root}/transactions/${committed_token}/transaction.state"
-
 # Host activity, extension activity, and process-query errors fail before withdrawal or any
 # root, registration, or launch mutation.
 uninstall_registration_before="$(<"${fixture_root}/registration")"
 uninstall_state_before="$(/usr/bin/shasum -a 256 "${state_root}/installed.state")"
 uninstall_mutations_before="$(grep -Ec '^(remove=|add=|open-|securityagent$)' "${fixture_root}/events" || true)"
-uninstall_transactions_before="$(find "${state_root}/transactions" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+uninstall_transactions_before="$(find "${state_root}/transactions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true)"
 for inactivity_case in host.active provider.active pgrep.fail; do
   touch "${fixture_root}/${inactivity_case}"
   if env "${common_env[@]}" "${workflow}" uninstall >/dev/null 2>"${fixture_root}/uninstall-${inactivity_case}.err"; then exit 11; fi
@@ -378,42 +461,60 @@ for inactivity_case in host.active provider.active pgrep.fail; do
   [[ -d "${destination_app}" && "$(<"${fixture_root}/registration")" == "${uninstall_registration_before}" &&
      "$(/usr/bin/shasum -a 256 "${state_root}/installed.state")" == "${uninstall_state_before}" &&
      "$(grep -Ec '^(remove=|add=|open-|securityagent$)' "${fixture_root}/events" || true)" == "${uninstall_mutations_before}" &&
-     "$(find "${state_root}/transactions" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == "${uninstall_transactions_before}" ]] || exit 12
+     "$(find "${state_root}/transactions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true)" == "${uninstall_transactions_before}" ]] || exit 12
 done
 
-# Failed post-withdrawal registration absence restores the exact app.
-touch "${fixture_root}/retain-stale-registration"
-if env "${common_env[@]}" "${workflow}" uninstall >"${fixture_root}/uninstall-rollback.out" 2>"${fixture_root}/uninstall-rollback.err"; then
-  cat "${fixture_root}/uninstall-rollback.out" >&2
-  exit 12
-fi
-grep -q 'exact owned app was restored' "${fixture_root}/uninstall-rollback.err" || { cat "${fixture_root}/uninstall-rollback.err" >&2; exit 12; }
-[[ -d "${destination_app}" ]]
-rm "${fixture_root}/retain-stale-registration"
+# Wrong registration versions and denied root ownership proof stop before removal.
+print 0.1.1 > "${fixture_root}/registration-version"
+if env "${common_env[@]}" "${workflow}" uninstall >/dev/null 2>"${fixture_root}/uninstall-wrong-version.err"; then exit 121; fi
+grep -qx 'provider_registration=unexpected' "${fixture_root}/uninstall-wrong-version.err"
+rm "${fixture_root}/registration-version"
+if env "${common_env[@]}" DNIE_WORKFLOW_TEST_REFUSE_ROOT_COMMAND=probe-pilot-removal \
+    "${workflow}" uninstall >/dev/null 2>"${fixture_root}/uninstall-probe-refused.err"; then exit 122; fi
+grep -qx 'provider_registration=exact-installed' "${fixture_root}/uninstall-probe-refused.err"
+[[ -d "${destination_app}" && "$(<"${fixture_root}/registration")" == "${uninstall_registration_before}" ]]
 
-# Uninstall succeeds, retains its archive, and leaves unrelated state alone.
+# A failed app-removal request reports the app still present and the withdrawn row absent.
+if env "${common_env[@]}" DNIE_WORKFLOW_TEST_REFUSE_ROOT_COMMAND=remove-pilot \
+    "${workflow}" uninstall >/dev/null 2>"${fixture_root}/uninstall-remove-refused.err"; then exit 123; fi
+grep -qx 'installed_app=present' "${fixture_root}/uninstall-remove-refused.err"
+grep -qx 'provider_registration=absent' "${fixture_root}/uninstall-remove-refused.err"
+[[ -d "${destination_app}" && ! -e "${fixture_root}/registration" ]]
+
+# A normal retry completes exact removal, preserving unrelated state and creating no archives.
 env "${common_env[@]}" "${workflow}" uninstall > "${fixture_root}/uninstall.out"
-grep -q '^pilot_uninstall=pass$' "${fixture_root}/uninstall.out"
+grep -qx 'pilot_uninstall=pass' "${fixture_root}/uninstall.out"
 [[ ! -e "${destination_app}" && "$(<"${fixture_root}/unrelated-sentinel")" == keep ]]
-find "${fixture_root}/Library/Application Support/org.dniemacos.dnietoken/pilot-lifecycle/transactions" -type d -name DNIeTokenHost.app | grep -q .
+[[ -z "$(find "${state_root}/transactions" -mindepth 1 -print 2>/dev/null || true)" ]]
 
-# A denied rollback authorization preserves the exact pending topology for reviewed recovery.
+# A failed post-registration query reports partial state for subsequent exact uninstall.
 if env "${common_env[@]}" DNIE_WORKFLOW_TEST_FAIL_POST_SECURITYAGENT_QUERY=1 \
-    DNIE_WORKFLOW_TEST_REFUSE_ROOT_COMMAND=rollback-install "${workflow}" install \
-    >/dev/null 2>"${fixture_root}/rollback-authorization.err"; then exit 82; fi
-grep -q 'retained pending state requires reviewed recovery' "${fixture_root}/rollback-authorization.err"
-[[ -d "${destination_app}" ]] && grep -q '^phase=pending-install$' "${state_root}/installed.state"
-pending_token="$(sed -n 's/^token=//p' "${state_root}/installed.state")"
-env "${common_env[@]}" "${root_helper}" rollback-install "${pending_token}" "${cdhash}" >/dev/null
+    "${workflow}" install >/dev/null 2>"${fixture_root}/failed-post-registration-query.err"; then exit 82; fi
+grep -qx 'installed_app=present' "${fixture_root}/failed-post-registration-query.err"
+grep -qx 'provider_registration=unavailable' "${fixture_root}/failed-post-registration-query.err"
 rm "${fixture_root}/registration-query.fail"
-[[ ! -e "${destination_app}" && ! -e "${state_root}/installed.state" ]]
+env "${common_env[@]}" "${workflow}" uninstall | grep -qx 'pilot_uninstall=pass'
 
-# Refused native registration authorization leaves the exact pending install recoverable.
-if env "${common_env[@]}" DNIE_WORKFLOW_TEST_REFUSE_ROOT_COMMAND=register-securityagent "${workflow}" install \
-    >/dev/null 2>"${fixture_root}/securityagent-authorization.err"; then exit 83; fi
-grep -q 'retained pending state requires reviewed recovery' "${fixture_root}/securityagent-authorization.err"
-[[ -d "${destination_app}" ]] && grep -q '^phase=pending-install$' "${state_root}/installed.state"
-pending_token="$(sed -n 's/^token=//p' "${state_root}/installed.state")"
+# The pending-only recovery entry points refuse a committed install and commit-intent topology.
+committed_token=legacycommitted
+env "${common_env[@]}" "${root_helper}" install "${committed_token}" "${source_app}" "${cdhash}" >/dev/null
+env "${common_env[@]}" "${root_helper}" commit-install "${committed_token}" "${cdhash}" >/dev/null
+if env "${common_env[@]}" "${root_helper}" probe-pending-install "${committed_token}" "${cdhash}" >/dev/null 2>&1; then exit 84; fi
+if env "${common_env[@]}" "${root_helper}" rollback-pending-install "${committed_token}" "${cdhash}" >/dev/null 2>&1; then exit 85; fi
+[[ -d "${destination_app}" ]] && grep -q '^phase=committed$' "${state_root}/installed.state"
+print 'phase=commit-install-intent' > "${state_root}/transactions/${committed_token}/transaction.state"
+chmod 600 "${state_root}/transactions/${committed_token}/transaction.state"
+if env "${common_env[@]}" "${root_helper}" probe-pending-install "${committed_token}" "${cdhash}" >/dev/null 2>&1; then exit 87; fi
+if env "${common_env[@]}" "${root_helper}" rollback-pending-install "${committed_token}" "${cdhash}" >/dev/null 2>&1; then exit 88; fi
+print 'phase=installed' > "${state_root}/transactions/${committed_token}/transaction.state"
+chmod 600 "${state_root}/transactions/${committed_token}/transaction.state"
+
+env "${common_env[@]}" "${root_helper}" uninstall legacywithdraw "${cdhash}" >/dev/null
+env "${common_env[@]}" "${root_helper}" commit-uninstall legacywithdraw "${cdhash}" >/dev/null
+
+# The explicit recovery path still accepts pending installs created by the legacy root ABI.
+pending_token="install.20261120000000.100.201"
+env "${common_env[@]}" "${root_helper}" install "${pending_token}" "${source_app}" "${cdhash}" >/dev/null
 
 # A root-proven pending artifact remains recoverable when its restrictive app mode blocks the
 # normal-user inspector and no provider row was ever created.
@@ -431,9 +532,8 @@ source_modes_restrictive
 [[ "$(source_mode_snapshot)" == "${source_modes_before}" ]]
 
 # Recreate a pending install for exact-row and topology-change recovery coverage.
-if env "${common_env[@]}" DNIE_WORKFLOW_TEST_REFUSE_ROOT_COMMAND=register-securityagent "${workflow}" install \
-    >/dev/null 2>"${fixture_root}/securityagent-authorization-second.err"; then exit 94; fi
-pending_token="$(sed -n 's/^token=//p' "${state_root}/installed.state")"
+pending_token="install.20261120000000.100.202"
+env "${common_env[@]}" "${root_helper}" install "${pending_token}" "${source_app}" "${cdhash}" >/dev/null
 print -r -- "${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex" > "${fixture_root}/registration"
 
 # A row classification change after the privileged proof stops before app withdrawal.
@@ -566,8 +666,11 @@ sed -i '' 's/00fe/00ff/' "${source_app}/Contents/Resources/generation2.synthetic
 print -r -- "${source_app}/Contents/PlugIns/DNIeTokenExtension.appex" > "${fixture_root}/registration"
 touch "${fixture_root}/fail-query-after-remove"
 if env "${common_env[@]}" "${workflow}" install >/dev/null 2>"${fixture_root}/query-fail.err"; then exit 133; fi
-grep -q 'isolation result is uncertain' "${fixture_root}/query-fail.err"
+grep -q 'registration withdrawal could not be verified' "${fixture_root}/query-fail.err"
+grep -qx 'installed_app=present' "${fixture_root}/query-fail.err"
+grep -qx 'provider_registration=unavailable' "${fixture_root}/query-fail.err"
 rm -f "${fixture_root}/fail-query-after-remove" "${fixture_root}/registration-query.fail" "${fixture_root}/registration"
+env "${common_env[@]}" "${workflow}" uninstall | grep -qx 'pilot_uninstall=pass'
 
 # Canonical traversal and symlinked source ancestors are rejected in fixture mode.
 escaped_root="${fixture_root}/../${fixture_root:t}"
@@ -576,37 +679,39 @@ ln -s "${fixture_root}/repository" "${fixture_root}/linked-repository"
 if env "${common_env[@]}" "${root_helper}" install symlink1 "${fixture_root}/linked-repository/DNIeTokenHost.app" "${cdhash}" >/dev/null 2>&1; then exit 135; fi
 rm "${fixture_root}/linked-repository"
 
-# Commit failures drive the paired rollback rather than leaving a published or withdrawn app.
-if env "${common_env[@]}" DNIE_LIFECYCLE_TEST_FAIL_AT=commit-install-before-write "${workflow}" install >/dev/null 2>"${fixture_root}/commit-install.err"; then exit 136; fi
-grep -q 'Install commit failed' "${fixture_root}/commit-install.err"
-[[ ! -e "${destination_app}" ]]
-env "${common_env[@]}" "${workflow}" install >/dev/null
-if env "${common_env[@]}" DNIE_LIFECYCLE_TEST_FAIL_AT=commit-uninstall-before-write "${workflow}" uninstall >/dev/null 2>"${fixture_root}/commit-uninstall.err"; then exit 137; fi
-grep -q 'Uninstall commit failed' "${fixture_root}/commit-uninstall.err"
-[[ -d "${destination_app}" ]]
-env "${common_env[@]}" "${root_helper}" uninstall hardcleanup1 "${cdhash}" >/dev/null
-env "${common_env[@]}" "${root_helper}" commit-uninstall hardcleanup1 "${cdhash}" >/dev/null
+# Denied final ownership confirmation retains the verifiably registered app for uninstall.
+if env "${common_env[@]}" DNIE_WORKFLOW_TEST_REFUSE_ROOT_COMMAND=confirm-pilot \
+    "${workflow}" install >/dev/null 2>"${fixture_root}/confirm-refused.err"; then exit 136; fi
+grep -qx 'installed_app=present' "${fixture_root}/confirm-refused.err"
+grep -qx 'provider_registration=exact-installed' "${fixture_root}/confirm-refused.err" ||
+  { cat "${fixture_root}/confirm-refused.err" >&2; exit 136; }
+env "${common_env[@]}" "${workflow}" uninstall | grep -qx 'pilot_uninstall=pass'
 
-# Failures and hard kills after the first commit mutation remain exactly rollback-recoverable.
-if env "${common_env[@]}" DNIE_LIFECYCLE_TEST_FAIL_AT=commit-install-after-state "${workflow}" install >/dev/null 2>"${fixture_root}/commit-install-after.err"; then exit 138; fi
-grep -q 'Install commit failed' "${fixture_root}/commit-install-after.err"
-[[ ! -e "${destination_app}" && ! -e "${state_root}/installed.state" ]]
-env "${common_env[@]}" "${workflow}" install >/dev/null
-if env "${common_env[@]}" DNIE_LIFECYCLE_TEST_FAIL_AT=commit-uninstall-after-state "${workflow}" uninstall >/dev/null 2>"${fixture_root}/commit-uninstall-after.err"; then exit 139; fi
-grep -q 'Uninstall commit failed' "${fixture_root}/commit-uninstall-after.err"
-[[ -d "${destination_app}" ]] && grep -q '^phase=committed$' "${state_root}/installed.state"
-env "${common_env[@]}" "${workflow}" uninstall >/dev/null
+# A failed publication before and after rename remains attributable without a rollback archive.
+for boundary in binding rename; do
+  if [[ "${boundary}" == binding ]]; then
+    print -r -- "${source_app}/Contents/PlugIns/DNIeTokenExtension.appex" > "${fixture_root}/registration"
+  fi
+  if env "${common_env[@]}" DNIE_LIFECYCLE_TEST_FAIL_AT="publish-pilot-after-${boundary}" \
+      "${workflow}" install >/dev/null 2>"${fixture_root}/publication-${boundary}.err"; then exit 137; fi
+  if [[ "${boundary}" == binding ]]; then
+    grep -qx 'installed_app=absent' "${fixture_root}/publication-${boundary}.err"
+    grep -qx 'provider_registration=exact-source' "${fixture_root}/publication-${boundary}.err"
+    expected_result=already-absent
+  else
+    grep -qx 'installed_app=present' "${fixture_root}/publication-${boundary}.err"
+    grep -qx 'provider_registration=absent' "${fixture_root}/publication-${boundary}.err"
+    expected_result=pass
+  fi
+  env "${common_env[@]}" "${workflow}" uninstall | grep -qx "pilot_uninstall=${expected_result}"
+  [[ ! -e "${destination_app}" && ! -e "${state_root}/installed.state" ]]
+  if [[ "${boundary}" == binding ]]; then
+    grep -qx "${source_app}/Contents/PlugIns/DNIeTokenExtension.appex" "${fixture_root}/registration"
+    rm "${fixture_root}/registration"
+  fi
+done
 
-if env "${common_env[@]}" DNIE_LIFECYCLE_TEST_KILL_AT=commit-install-after-state "${workflow}" install >/dev/null 2>"${fixture_root}/commit-install-kill.err"; then exit 140; fi
-grep -q 'Install commit failed' "${fixture_root}/commit-install-kill.err"
-[[ ! -e "${destination_app}" && ! -e "${state_root}/installed.state" && ! -e "${state_root}/operation.lock" ]]
-env "${common_env[@]}" "${workflow}" install >/dev/null
-if env "${common_env[@]}" DNIE_LIFECYCLE_TEST_KILL_AT=commit-uninstall-after-state "${workflow}" uninstall >/dev/null 2>"${fixture_root}/commit-uninstall-kill.err"; then exit 141; fi
-grep -q 'Uninstall commit failed' "${fixture_root}/commit-uninstall-kill.err"
-[[ -d "${destination_app}" && ! -e "${state_root}/operation.lock" ]] && grep -q '^phase=committed$' "${state_root}/installed.state"
-env "${common_env[@]}" "${workflow}" uninstall >/dev/null
-
-# Reinstall works; destination collisions, malformed artifacts, and locks fail closed.
+# Reinstall uses the same direct path, including after legacy recovery.
 env "${common_env[@]}" "${workflow}" install >/dev/null
 env "${common_env[@]}" "${workflow}" uninstall >/dev/null
 

@@ -1,4 +1,4 @@
-"""Preserve and restore the exact signed source needed by pilot install recovery."""
+"""Restore or retire an exact signed source from a legacy pilot recovery cache."""
 
 from contextlib import contextmanager
 import ctypes
@@ -126,64 +126,6 @@ def stage(slot, parent, label):
                 os.rmdir(name, dir_fd=parent)
         finally:
             os.close(fd)
-
-
-def has_executable(entries, path):
-    for name in path[:-1]:
-        entry = entries.get(name)
-        if entry is None or entry[1] is None:
-            return False
-        entries = entry[1]
-    entry = entries.get(path[-1])
-    return entry is not None and entry[1] is None
-
-
-def preserve(slot, stack, app_fd, app_path, root_fd, inspector):
-    slot.revalidate_anchors()
-    app_entries = slot.snapshot(app_fd)
-    if inspector.name == "inspect-pilot-artifact.sh":
-        contents = ("Contents",)
-        host = (*contents, "MacOS", "DNIeTokenHost")
-        plugin = (*contents, "PlugIns", "DNIeTokenExtension.appex",
-                  "Contents", "MacOS", "DNIeTokenExtension")
-        # Interrupted Xcode output with a missing required executable cannot
-        # satisfy the existing exact production recovery inspector.
-        if not has_executable(app_entries, host) or not has_executable(app_entries, plugin):
-            return False
-    expected = inspect_app(app_path, inspector)
-    if expected is None:
-        return False
-    slot.revalidate_anchors()
-
-    cache_path = slot.repository.joinpath(*CACHE)
-    require_ignored(slot.repository, cache_path)
-    cache_fd = slot.open_directories(stack, root_fd, CACHE, create=True, private_last=True)
-    if entry_exists(cache_fd, expected):
-        with slot.scoped_anchors():
-            archived = slot.open_directories(stack, cache_fd, (expected, APP), private_first=True)
-            if archived is None or set(os.listdir(slot.anchors[-2][2])) != {APP}:
-                raise RecoveryError("The exact development recovery entry contains unrelated data.")
-            slot.snapshot(archived)
-            require_exact_app(cache_path / expected / APP, inspector, expected)
-            slot.revalidate_anchors()
-        return True
-
-    with stage(slot, cache_fd, "recover-source") as (pending, pending_fd, check):
-        os.mkdir(APP, 0o700, dir_fd=pending_fd)
-        copy_fd = os.open(APP, slot.directory_flags, dir_fd=pending_fd)
-        try:
-            copy_entries(slot, app_fd, copy_fd, app_entries)
-            os.fchmod(copy_fd, stat.S_IMODE(os.fstat(app_fd).st_mode))
-            os.fsync(copy_fd)
-        finally:
-            os.close(copy_fd)
-        require_exact_app(cache_path / pending / APP, inspector, expected)
-        require_exact_app(app_path, inspector, expected)
-        check()
-        slot.require_unchanged(slot.entry_info(pending_fd, APP), (cache_path / pending / APP).lstat())
-        os.fsync(pending_fd)
-        publish(cache_fd, pending, cache_fd, expected)
-    return True
 
 
 def restore(slot, stack, root_fd, inspector, expected, source_parts):

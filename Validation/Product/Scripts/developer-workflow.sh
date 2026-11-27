@@ -192,11 +192,19 @@ prune_completed_development_app() {
     print -u2 'The exact recovery cache entry was retained for explicit review.'
 }
 
+inspect_artifact() {
+  local inspector_script="$(test_override DNIE_WORKFLOW_ARTIFACT_INSPECTOR "${script_dir}/inspect-pilot-artifact.sh")"
+  "${inspector_script}" "$1"
+}
+
+artifact_field() {
+  print -r -- "$1" | sed -n "s/^$2=//p"
+}
+
 artifact_cdhash() {
-  local output inspector_script
-  inspector_script="$(test_override DNIE_WORKFLOW_ARTIFACT_INSPECTOR "${script_dir}/inspect-pilot-artifact.sh")"
-  output="$("${inspector_script}" "$1")" || return 1
-  print -r -- "${output}" | sed -n 's/^artifact_cdhash=//p'
+  local output
+  output="$(inspect_artifact "$1")" || return 1
+  artifact_field "${output}" artifact_cdhash
 }
 
 registration_snapshot() {
@@ -477,67 +485,139 @@ run_finish_source_restoration() {
   print 'source_registration=exact-singleton'
 }
 
-run_install() {
-  require_normal_user
-  local source_app destination_app source_extension snapshot cdhash token source_isolated=0 root_pending=0
+lifecycle_paths() {
   source_app="$(test_override DNIE_WORKFLOW_SOURCE_APP "${repository_root}/DerivedData/T067/Build/Products/Release/DNIeTokenHost.app")"
   destination_app="$(test_override DNIE_WORKFLOW_DESTINATION_APP /Applications/DNIeTokenHost.app)"
   source_extension="${source_app}/Contents/PlugIns/DNIeTokenExtension.appex"
-  cdhash="$(artifact_cdhash "${source_app}")" || fail "The development product failed the exact pilot artifact preflight."
-  [[ "${cdhash}" =~ '^[[:xdigit:]]{40}$' ]] || fail "The artifact preflight returned no valid signed identity."
-  require_app_inactive "${source_app}"
-  snapshot="$(registration_snapshot)" || fail "Unable to inspect the pre-install registration state."
-  if [[ "${snapshot}" == *org.dniemacos.dnietoken.tokenextension* ]]; then
-    require_registration_path "${source_extension}" "${snapshot}"
-  else
-    require_no_registration "${snapshot}"
+  installed_extension="${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex"
+}
+
+observe_lifecycle() {
+  local source_app destination_app source_extension installed_extension
+  lifecycle_paths
+  local snapshot inspection version paths installed_row="" source_row=""
+  local app_state=absent registration_state=unavailable
+  if [[ -L "${destination_app}" || ( -e "${destination_app}" && ! -d "${destination_app}" ) ]]; then
+    app_state=unexpected
+  elif [[ -d "${destination_app}" ]]; then
+    app_state=present
+    if inspection="$(inspect_artifact "${destination_app}" 2>/dev/null)" &&
+       version="$(artifact_field "${inspection}" extension_marketing_version)" &&
+       [[ "${version}" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]]; then
+      installed_row="${version}"$'\t'"${installed_extension}"
+      print "installed_artifact=verified"
+    else
+      print "installed_artifact=unverified"
+    fi
   fi
-  token="install.$(/bin/date +%Y%m%d%H%M%S).$$.${RANDOM}"
-  run_root_lifecycle authorize "${token}" >/dev/null ||
-    fail "Administrator authorization was not granted; the source registration was not changed."
-  if [[ "${snapshot}" == *org.dniemacos.dnietoken.tokenextension* ]]; then
-    "$(tool pluginkit)" -r "${source_extension}"
+  if snapshot="$(registration_snapshot)"; then
+    if paths="$(active_paths_for_identifier "${snapshot}" org.dniemacos.dnietoken.tokenextension)" &&
+       [[ $'\n'"${paths}"$'\n' == *$'\n'"${source_extension}"$'\n'* ]] &&
+       inspection="$(inspect_artifact "${source_app}" 2>/dev/null)" &&
+       version="$(artifact_field "${inspection}" extension_marketing_version)" &&
+       [[ "${version}" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]]; then
+      source_row="${version}"$'\t'"${source_extension}"
+    fi
+    registration_state="$(published_registration "${snapshot}" "${source_row}" "${installed_row}")" || registration_state=unexpected
+  fi
+  print "installed_app=${app_state}"
+  print "provider_registration=${registration_state}"
+  [[ "${app_state}" != unexpected && ( "${app_state}" != present || -n "${installed_row}" ) &&
+     "${registration_state}" != unexpected && "${registration_state}" != unavailable &&
+     "${registration_state}" != exact-both ]]
+}
+
+lifecycle_fail() {
+  print -u2 -- "$1"
+  observe_lifecycle >&2 || true
+  exit 1
+}
+
+published_registration() {
+  local snapshot="$1" source_row="$2" installed_row="$3" records
+  records="$(active_registrations_for_identifier "${snapshot}" org.dniemacos.dnietoken.tokenextension)" || return 1
+  case "${records}" in
+    "") print absent ;;
+    "${source_row}") print exact-source ;;
+    "${installed_row}") print exact-installed ;;
+    "${source_row}"$'\n'"${installed_row}"|"${installed_row}"$'\n'"${source_row}") print exact-both ;;
+    *) return 1 ;;
+  esac
+}
+
+wait_for_registration_set() {
+  local source_row="$1" installed_row="$2" expected="$3" allow_absence="${4:-no}" snapshot registration
+  for _ in {1..20}; do
+    snapshot="$(registration_snapshot)" &&
+      registration="$(published_registration "${snapshot}" "${source_row}" "${installed_row}")" || return 1
+    [[ "${registration}" == "${expected}" ||
+       ( "${allow_absence}" == yes && "${registration}" == absent ) ]] && return 0
+    "$(tool sleep)" 0.25
+  done
+  return 1
+}
+
+run_install() {
+  require_normal_user
+  local source_app destination_app source_extension installed_extension
+  local snapshot inspection cdhash version token publication confirmation source_isolated=0
+  local source_row installed_row registration
+  lifecycle_paths
+  [[ ! -e "${destination_app}" && ! -L "${destination_app}" ]] ||
+    lifecycle_fail "Install requires an absent application destination."
+  inspection="$(inspect_artifact "${source_app}")" ||
+    lifecycle_fail "The development product failed the exact pilot artifact preflight."
+  cdhash="$(artifact_field "${inspection}" artifact_cdhash)"
+  version="$(artifact_field "${inspection}" extension_marketing_version)"
+  [[ "${cdhash}" =~ '^[[:xdigit:]]{40}$' && "${version}" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] ||
+    lifecycle_fail "The artifact preflight returned an invalid signed identity or extension version."
+  (require_app_inactive "${source_app}"; require_app_inactive "${destination_app}") ||
+    lifecycle_fail "The source and installed paths must be inactive before publication."
+  snapshot="$(registration_snapshot)" || lifecycle_fail "Unable to inspect the pre-install registration state."
+  if ! registration_is_absent "${snapshot}" &&
+     ! registration_is_exact_path_version "${source_extension}" "${version}" "${snapshot}"; then
+    lifecycle_fail "Install found a stale, duplicated, or competing provider registration."
+  fi
+
+  token="direct-install.$(/bin/date +%Y%m%d%H%M%S).$$.${RANDOM}"
+  publication="$(run_root_lifecycle publish-pilot "${token}" "${source_app}" "${cdhash}")" &&
+    [[ "${publication}" == pilot_publication=pending-install ]] ||
+    lifecycle_fail "The authorized app publication did not complete."
+  [[ "$(inspect_artifact "${destination_app}")" == "${inspection}" ]] ||
+    lifecycle_fail "The published app does not match the inspected build."
+  source_row="${version}"$'\t'"${source_extension}"
+  installed_row="${version}"$'\t'"${installed_extension}"
+  snapshot="$(registration_snapshot)" || lifecycle_fail "Unable to inspect registration after app publication."
+  registration="$(published_registration "${snapshot}" "${source_row}" "${installed_row}")" ||
+    lifecycle_fail "Registration is unexpected after app publication."
+  if [[ "${registration}" == exact-source || "${registration}" == exact-both ]]; then
+    [[ "$(inspect_artifact "${source_app}")" == "${inspection}" ]] ||
+      lifecycle_fail "The build-tree artifact changed before withdrawing its registration."
+    (require_app_inactive "${source_app}") ||
+      lifecycle_fail "The build-tree registration could not be withdrawn safely."
+    snapshot="$(registration_snapshot)" &&
+      registration="$(published_registration "${snapshot}" "${source_row}" "${installed_row}")" &&
+      [[ "${registration}" == exact-source || "${registration}" == exact-both ]] ||
+      lifecycle_fail "The exact build-tree row did not remain visible before withdrawal."
+    "$(tool pluginkit)" -r "${source_extension}" >/dev/null ||
+      lifecycle_fail "The exact build-tree registration could not be withdrawn."
+    wait_for_registration_set "${source_row}" "${installed_row}" exact-installed yes ||
+      lifecycle_fail "The exact build-tree registration withdrawal could not be verified."
     source_isolated=1
-    local isolated_snapshot=""
-    if ! isolated_snapshot="$(registration_snapshot)" || ! require_no_registration "${isolated_snapshot}"; then
-      fail "The exact build-tree registration isolation result is uncertain; no source restoration was attempted."
-    fi
   fi
-  restore_source_registration() {
-    (( source_isolated )) || return 0
-    restore_development_source_registration "${cdhash}"
-  }
-  rollback_install() {
-    if (( root_pending )); then
-      run_root_lifecycle probe-rollback-install "${token}" "${cdhash}" >/dev/null || return 1
-      "$(tool pluginkit)" -r "${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex" >/dev/null 2>&1 || return 1
-      local rollback_snapshot=""
-      rollback_snapshot="$(registration_snapshot)" && require_no_registration "${rollback_snapshot}" || return 1
-      run_root_lifecycle rollback-install "${token}" "${cdhash}" >/dev/null || return 1
-      root_pending=0
-    fi
-    restore_source_registration || true
-  }
-  trap 'rollback_install; exit 130' INT TERM HUP
-  if ! run_root_lifecycle install "${token}" "${source_app}" "${cdhash}"; then
-    run_root_lifecycle rollback-install "${token}" "${cdhash}" >/dev/null 2>&1 || true
-    restore_source_registration || true
-    return 1
-  fi
-  root_pending=1
+
   run_root_lifecycle register-securityagent "${token}" "${cdhash}" >/dev/null ||
-    fail "The documented _securityagent registration was not authorized or did not complete; retained pending state requires reviewed recovery."
-  if ! wait_for_registration_path "${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex"; then
-    rollback_install || fail "Installed-path registration failed and rollback authorization was unavailable; retained pending state requires reviewed recovery."
-    fail "The exact installed row was not observable immediately after the _securityagent command; the app was withdrawn into retained recovery and any isolated source registration was restored."
-  fi
-  if ! run_root_lifecycle commit-install "${token}" "${cdhash}"; then
-    rollback_install || fail "Install commit failed and automatic rollback was not provable; retained pending state requires review."
-    fail "Install commit failed; the exact app was rolled back."
-  fi
-  root_pending=0
-  trap - INT TERM HUP
-  prune_completed_development_app "${cdhash}"
+    lifecycle_fail "The _securityagent registration did not complete."
+  wait_for_registration_set "" "${installed_row}" exact-installed ||
+    lifecycle_fail "Registration did not establish one exact installed provider row."
+  [[ "$(inspect_artifact "${destination_app}")" == "${inspection}" ]] ||
+    lifecycle_fail "The installed app changed after registration."
+  confirmation="$(run_root_lifecycle confirm-pilot "${token}" "${cdhash}")" &&
+    [[ "${confirmation}" == pilot_installation=committed ]] ||
+    lifecycle_fail "The installed app ownership could not be confirmed."
+  snapshot="$(registration_snapshot)" &&
+    registration_is_exact_path_version "${installed_extension}" "${version}" "${snapshot}" ||
+    lifecycle_fail "The exact installed provider row did not remain visible after confirmation."
   print "pilot_install=pass"
   print "source_registration_isolated=${source_isolated}"
 }
@@ -631,73 +711,118 @@ run_recover_pending_install() {
 
 run_uninstall() {
   require_normal_user
-  local destination_app snapshot cdhash token root_pending=0
-  destination_app="$(test_override DNIE_WORKFLOW_DESTINATION_APP /Applications/DNIeTokenHost.app)"
-  snapshot="$(registration_snapshot)" || fail "Unable to inspect the pre-uninstall registration state."
-  if [[ ! -e "${destination_app}" && ! -L "${destination_app}" ]]; then
-    require_no_registration "${snapshot}"
-    token="absent.$(/bin/date +%Y%m%d%H%M%S).$$.${RANDOM}"
-    run_root_lifecycle probe-absent "${token}"
-    print "pilot_uninstall=already-absent"
-    return
+  local source_app destination_app source_extension installed_extension
+  local snapshot installed_inspection source_inspection cdhash=absent version token proof result
+  local source_row="" installed_row="" expected_after=absent registration paths installed_identity
+  local -a removal_arguments
+  lifecycle_paths
+  snapshot="$(registration_snapshot)" || lifecycle_fail "Unable to inspect the pre-uninstall registration state."
+  if [[ -e "${destination_app}" || -L "${destination_app}" ]]; then
+    [[ -d "${destination_app}" && ! -L "${destination_app}" ]] ||
+      lifecycle_fail "The install destination is not an exact application directory."
+    installed_identity="$(/usr/bin/stat -f '%d:%i' "${destination_app}")" &&
+      installed_inspection="$(inspect_artifact "${destination_app}")" ||
+      lifecycle_fail "The installed app failed exact product verification."
+    cdhash="$(artifact_field "${installed_inspection}" artifact_cdhash)"
+    version="$(artifact_field "${installed_inspection}" extension_marketing_version)"
+    [[ "${cdhash}" =~ '^[[:xdigit:]]{40}$' && "${version}" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] ||
+      lifecycle_fail "The installed app returned an invalid signed identity or extension version."
+    installed_row="${version}"$'\t'"${installed_extension}"
+    (require_app_inactive "${destination_app}") ||
+      lifecycle_fail "The installed path must be inactive before removal."
   fi
-  [[ -d "${destination_app}" && ! -L "${destination_app}" ]] || fail "The install destination is not an exact application directory."
-  cdhash="$(artifact_cdhash "${destination_app}")" || fail "The installed app failed exact product verification."
-  require_registration_path "${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex" "${snapshot}"
-  require_app_inactive "${destination_app}"
-  token="uninstall.$(/bin/date +%Y%m%d%H%M%S).$$.${RANDOM}"
-  rollback_uninstall() {
-    if (( root_pending )); then
-      run_root_lifecycle probe-rollback-uninstall "${token}" "${cdhash}" >/dev/null || return 1
-      run_root_lifecycle rollback-uninstall "${token}" "${cdhash}" >/dev/null || return 1
-      root_pending=0
-      "$(tool open)" -g "${destination_app}" >/dev/null 2>&1 || return 1
-      wait_for_registration_path "${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex" || return 1
+
+  # A failed install can leave the original development row beside or without
+  # the installed row. Verify this source independently and leave it in place.
+  paths="$(active_paths_for_identifier "${snapshot}" org.dniemacos.dnietoken.tokenextension)" ||
+    lifecycle_fail "Uninstall found a stale or competing provider registration."
+  if [[ $'\n'"${paths}"$'\n' == *$'\n'"${source_extension}"$'\n'* ]]; then
+    source_inspection="$(inspect_artifact "${source_app}")" ||
+      lifecycle_fail "The visible build-tree row could not be matched to the signed source."
+    version="$(artifact_field "${source_inspection}" extension_marketing_version)"
+    [[ "${version}" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] ||
+      lifecycle_fail "The signed source returned an invalid extension version."
+    source_row="${version}"$'\t'"${source_extension}"
+    expected_after=exact-source
+  fi
+
+  registration="$(published_registration "${snapshot}" "${source_row}" "${installed_row}")" ||
+    lifecycle_fail "Uninstall found a stale or competing provider registration."
+  token="direct-remove.$(/bin/date +%Y%m%d%H%M%S).$$.${RANDOM}"
+  if [[ "${registration}" == exact-installed || "${registration}" == exact-both ]]; then
+    proof="$(run_root_lifecycle probe-pilot-removal "${token}" "${cdhash}" "${installed_identity}")" &&
+      [[ "${proof}" == pilot_removal_probe=pass ]] ||
+      lifecycle_fail "Exact app ownership could not be proven before withdrawing the registration."
+    [[ "$(inspect_artifact "${destination_app}")" == "${installed_inspection}" &&
+       "$(/usr/bin/stat -f '%d:%i' "${destination_app}")" == "${installed_identity}" ]] ||
+      lifecycle_fail "The installed app changed after the removal ownership check."
+    (require_app_inactive "${destination_app}") ||
+      lifecycle_fail "The installed path must remain inactive before withdrawing registration."
+    if [[ -n "${source_row}" ]]; then
+      [[ "$(inspect_artifact "${source_app}")" == "${source_inspection}" ]] ||
+        lifecycle_fail "The build-tree artifact changed before withdrawing the installed registration."
     fi
-  }
-  trap 'rollback_uninstall; exit 130' INT TERM HUP
-  if ! run_root_lifecycle uninstall "${token}" "${cdhash}"; then
-    run_root_lifecycle rollback-uninstall "${token}" "${cdhash}" >/dev/null 2>&1 || true
-    return 1
+    snapshot="$(registration_snapshot)" &&
+      [[ "$(published_registration "${snapshot}" "${source_row}" "${installed_row}")" == "${registration}" ]] ||
+      lifecycle_fail "The registration changed after the removal ownership check."
+    "$(tool pluginkit)" -r "${installed_extension}" >/dev/null ||
+      lifecycle_fail "The exact installed provider registration could not be withdrawn."
+    wait_for_registration_set "${source_row}" "${installed_row}" "${expected_after}" ||
+      lifecycle_fail "The installed provider registration withdrawal could not be verified."
   fi
-  root_pending=1
-  if ! wait_for_registration_absence; then
-    rollback_uninstall
-    fail "Provider registration did not disappear; the exact owned app was restored."
+
+  if [[ -n "${source_row}" ]]; then
+    [[ "$(inspect_artifact "${source_app}")" == "${source_inspection}" ]] ||
+      lifecycle_fail "The build-tree artifact changed before app removal."
   fi
-  if ! run_root_lifecycle commit-uninstall "${token}" "${cdhash}"; then
-    rollback_uninstall || fail "Uninstall commit failed and exact restoration was not provable; retained pending state requires review."
-    fail "Uninstall commit failed; the exact app and registration were restored."
+  if [[ "${cdhash}" != absent ]]; then
+    [[ "$(/usr/bin/stat -f '%d:%i' "${destination_app}")" == "${installed_identity}" ]] ||
+      lifecycle_fail "The installed app changed immediately before removal."
+    (require_app_inactive "${destination_app}") ||
+      lifecycle_fail "The installed path must remain inactive before app removal."
   fi
-  root_pending=0
-  trap - INT TERM HUP
-  print "pilot_uninstall=pass"
+  snapshot="$(registration_snapshot)" &&
+    [[ "$(published_registration "${snapshot}" "${source_row}" "${installed_row}")" == "${expected_after}" ]] ||
+    lifecycle_fail "The expected registration state could not be verified before app removal."
+  removal_arguments=(remove-pilot "${token}" "${cdhash}")
+  if [[ "${cdhash}" != absent ]]; then
+    removal_arguments+=("${installed_identity}")
+  fi
+  result="$(run_root_lifecycle "${removal_arguments[@]}")" &&
+    [[ "${result}" == pilot_installation=absent ]] ||
+    lifecycle_fail "Exact app and ownership removal did not complete."
+  [[ ! -e "${destination_app}" && ! -L "${destination_app}" ]] ||
+    lifecycle_fail "The final app absence could not be verified."
+  if [[ -n "${source_row}" ]]; then
+    [[ "$(inspect_artifact "${source_app}")" == "${source_inspection}" ]] ||
+      lifecycle_fail "The build-tree artifact changed during removal."
+  fi
+  snapshot="$(registration_snapshot)" &&
+    [[ "$(published_registration "${snapshot}" "${source_row}" "${installed_row}")" == "${expected_after}" ]] ||
+    lifecycle_fail "The final registration state could not be verified."
+  print "provider_registration=${expected_after}"
+  if [[ "${cdhash}" == absent ]]; then
+    print "pilot_uninstall=already-absent"
+  else
+    print "pilot_uninstall=pass"
+  fi
 }
 
 run_status() {
   require_normal_user
-  local destination_app="$(test_override DNIE_WORKFLOW_DESTINATION_APP /Applications/DNIeTokenHost.app)"
-  local inspect_script="$(test_override DNIE_WORKFLOW_INSPECT_SCRIPT "${script_dir}/inspect-registration.sh")"
-  local pluginkit_command="$(tool pluginkit)"
-  if [[ -L "${destination_app}" ]]; then
-    fail "The install destination is a symlink; status refuses to follow it."
-  elif [[ -d "${destination_app}" ]]; then
-    "${inspect_script}"
-    print "installed_app=present"
-  elif [[ -e "${destination_app}" ]]; then
-    fail "The install destination exists but is not an application directory."
-  else
-    local registration=""
-    if ! registration="$(${pluginkit_command} -m -A -D -vvv -i org.dniemacos.dnietoken.tokenextension 2>/dev/null)"; then
-      fail "Unable to inspect CryptoTokenKit registration state."
-    fi
-    if [[ "${registration}" == *org.dniemacos.dnietoken.tokenextension* ]]; then
-      fail "The app is absent but a matching registration remains visible."
-    fi
-    print "installed_app=absent"
+  local observation observed=0
+  observation="$(observe_lifecycle)" || observed=$?
+  print -r -- "${observation}"
+  if [[ "${observation}" == *provider_registration=exact-installed ]]; then
+    local source_app destination_app source_extension installed_extension
+    lifecycle_paths
+    print "installed_provider_visibility=pass"
+    print "installed_extension=${installed_extension}"
+  elif [[ "${observation}" == *provider_registration=absent ]]; then
     print "installed_provider_visibility=absent"
   fi
   print "status_private_operation=false"
+  return "${observed}"
 }
 
 print_help() {
@@ -712,7 +837,7 @@ print_help() {
   print '  clean     Remove the selected development build slot when its safety checks pass'
   print ''
   print 'Set DNIE_SIGNING_IDENTITY_SHA1 to one valid Apple Development SHA-1 when auto-selection is ambiguous.'
-  print '  uninstall Withdraw only the exact-owned pilot app into retained recovery'
+  print '  uninstall Remove the exact-owned pilot app and its matching registration'
   print '  finish-source-restoration CDHASH  Restore only the exact development row after an independently audited consumed recovery'
   print 'upgrade, disable, and enable remain intentionally unsupported.'
 }

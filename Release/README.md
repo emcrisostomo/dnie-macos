@@ -277,16 +277,12 @@ slot reusable. If deletion fails, the command reports a private `.retired-*`
 entry in the same parent directory. That entry remains for explicit review;
 a later cleanup does not sweep unrelated or interrupted output.
 
-An interrupted installation can require the exact signed development app. When
-lifecycle state exists, cleanup and a subsequent build preserve an eligible
-signed source app under the Git-ignored, owner-only
-`Validation/private/DevelopmentRecovery` directory. This is local recovery
-state containing the same provisioned resource as that app, not a source or
-release artifact. Existing pending-install recovery and source-restoration
-commands can restore the expected app only to its missing original T067 path.
-They never overwrite a newer or mismatched app, and still require the original
-signature, identity and lifecycle authorization checks. Keep retained recovery
-state until the corresponding lifecycle procedure succeeds. Only an exact
-matching entry with a reverified original source is automatically disposed at
-that successful gate; other entries require explicit dependency review. Do not
-manually delete recovery state to force a failed install or cleanup to proceed.
+Clean and rebuild do not create a signed recovery copy. If manual install
+publishes the app but fails registration, use `make status` to inspect the
+result and `make uninstall` before retrying.
+An exact app already retained under the Git-ignored owner-only
+`Validation/private/DevelopmentRecovery` directory can still be restored to
+its missing original T067 path after signature and identity checks. Review
+existing retained artifacts against their transactions before disposing of them.
+If an older installer left a pending transaction, resolve it before cleaning
+or rebuilding its source slot.

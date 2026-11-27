@@ -105,7 +105,7 @@ done
 /bin/rm -f -- "${host_parser_fixture}"
 
 register_line="$(grep -n 'run_root_lifecycle register-securityagent' "${workflow}" | head -n 1 | cut -d: -f1)"
-observation_line="$(grep -n 'wait_for_registration_path "${destination_app}/Contents/PlugIns/DNIeTokenExtension.appex"' "${workflow}" | head -n 1 | cut -d: -f1)"
+observation_line="$(grep -n 'wait_for_registration_set "" "${installed_row}" exact-installed' "${workflow}" | head -n 1 | cut -d: -f1)"
 [[ "${register_line}" == <-> && "${observation_line}" == <-> && "${register_line}" -lt "${observation_line}" ]]
 if /usr/bin/awk '/^run_install\(\)/{capture=1} capture{print} /^run_recover_pending_install\(\)/{exit}' "${workflow}" |
    grep -Fq '"$(tool open)" -g "${destination_app}"'; then
@@ -136,6 +136,23 @@ require 'The failed-install archive target already exists.' "${root_helper}"
 require 'claim_and_restore_app "${transaction}/DNIeTokenHost.app"' "${root_helper}"
 require 'A lifecycle fixture descendant is symlinked, noncanonical, or not owned' "${root_helper}"
 reject '/bin/mv -n' "${root_helper}"
+require 'renameatx_np' "${root_helper}"
+require 'direct_python="/Library/Developer/CommandLineTools/usr/bin/python3"' "${root_helper}"
+require '"${direct_python}" -I -B -' "${root_helper}"
+require 'acquire_lock publish-pilot direct' "${root_helper}"
+require 'acquire_lock remove-pilot direct' "${root_helper}"
+direct_publish_body="$(/usr/bin/awk '/^  publish-pilot\)/{capture=1} capture{print} capture && /^    ;;/ {exit}' "${root_helper}")"
+[[ "${direct_publish_body}" == *'write_state pending-install'*'move_direct_app_exclusive'* ]]
+[[ "${direct_publish_body}" != *'write_transaction_state'* && "${direct_publish_body}" != *'publication_inode='* ]]
+direct_remove_body="$(/usr/bin/awk '/^  remove-pilot\)/{capture=1} capture{print} capture && /^    ;;/ {exit}' "${root_helper}")"
+[[ "${direct_remove_body}" == *'require_normalizable_app_topology'*'require_direct_installed_app'*'remove_direct_app'* ]]
+[[ "${direct_remove_body}" == *'require_direct_installed_app "${3:l}" "${observed_identity}"'*'remove_direct_app "${3:l}" "${observed_identity}"'* ]]
+[[ "${direct_remove_body}" != *'write_transaction_state'* && "${direct_remove_body}" != *'/bin/mv'* ]]
+require 'require_direct_installed_app "${3:l}" "$4"' "${root_helper}"
+require '/bin/rm -rfx -- "${custody_app}"' "${root_helper}"
+reject '/bin/rm -rfx -- "${destination}"' "${root_helper}"
+direct_custody_body="$(/usr/bin/awk '/^remove_direct_app\(\)/{capture=1} capture{print} capture && /^}/ {exit}' "${root_helper}")"
+[[ "${direct_custody_body}" == *'require_direct_app_inactive'*'move_direct_app_exclusive "${destination}" "${custody_app}"'* ]]
 
 # Exercise the exact digest expression with positional parameters that previously corrupted awk quoting.
 digest_source="$(mktemp /private/tmp/dnie-bootstrap-digest.XXXXXX)"

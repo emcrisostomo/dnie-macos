@@ -18,7 +18,6 @@ REPOSITORY = Path(__file__).resolve().parents[3]
 SLOTS = {"T067", "T083CleanIncremental", "T083Upgrade"}
 IDENTIFIER = "org.dniemacos.dnietoken.tokenextension"
 SOURCE_HOST = ("Build", "Products", "Release", "DNIeTokenHost.app")
-LIFECYCLE_PARENT = Path("/Library/Application Support/org.dniemacos.dnietoken")
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 FILE_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
 BLOCKING_FLAGS = (
@@ -134,14 +133,6 @@ class BuildSlot:
             parent = fd
         self.revalidate_anchors()
         return parent
-
-    @contextmanager
-    def scoped_anchors(self):
-        offset = len(self.anchors)
-        try:
-            yield
-        finally:
-            del self.anchors[offset:]
 
     def revalidate_anchors(self):
         for parent, name, fd, expected in self.anchors:
@@ -281,22 +272,6 @@ def observe_registration(path, pluginkit):
         raise CleanError("A PlugInKit registration still refers to the development build slot.")
 
 
-def preserve_if_needed(context, stack, root_fd, build_fd, inspector, lifecycle, recovery):
-    if context.path.name != "T067":
-        return False
-    try:
-        lifecycle.lstat()
-    except FileNotFoundError:
-        return False
-    with context.scoped_anchors():
-        app_fd = context.open_directories(stack, build_fd, SOURCE_HOST)
-        if app_fd is None:
-            return False
-        return recovery["preserve"](
-            context, stack, app_fd, context.path.joinpath(*SOURCE_HOST), root_fd, inspector,
-        )
-
-
 def require_no_acl(api, fd):
     # Darwin acl_get_fd_np(3) uses ENOENT for a descriptor without an ACL.
     import ctypes
@@ -309,10 +284,10 @@ def require_no_acl(api, fd):
         raise CleanError("A build or recovery entry ACL could not be inspected.")
 
 
-def clean(context, stack, root_fd, pluginkit, inspector, lifecycle, recovery):
+def clean(context, stack, root_fd, pluginkit, recovery):
     fd = context.open_directories(stack, root_fd, ("DerivedData", context.path.name))
     if fd is None:
-        return "absent", False
+        return "absent"
 
     slot_parent, name, _, info = context.anchors[-1]
     entries = context.snapshot(fd)
@@ -321,19 +296,13 @@ def clean(context, stack, root_fd, pluginkit, inspector, lifecycle, recovery):
     observe_lsof(context.path)
     context.revalidate_anchors()
     require_unchanged(info, os.fstat(fd))
-    preserved = preserve_if_needed(context, stack, root_fd, fd, inspector, lifecycle, recovery)
-    if preserved:
-        observe_registration(context.path, pluginkit)
-        observe_lsof(context.path)
-    context.revalidate_anchors()
-    require_unchanged(info, os.fstat(fd))
 
     context.retire_and_dispose(slot_parent, name, fd, entries,
                                context.path.name, recovery["publish"])
     try:
         entry_info(slot_parent, name)
     except FileNotFoundError:
-        return "removed", preserved
+        return "removed"
     raise CleanError("The build slot was recreated during cleanup.")
 
 
@@ -350,7 +319,6 @@ def main():
     arguments = sys.argv[1:]
     root = REPOSITORY
     pluginkit = Path("/usr/bin/pluginkit")
-    lifecycle = LIFECYCLE_PARENT
     inspector = REPOSITORY / "Validation/Product/Scripts/inspect-pilot-artifact.sh"
     if len(arguments) >= 3 and arguments[0] == "--fixture":
         root, bin_dir = (Path(value) for value in arguments[1:3])
@@ -362,11 +330,10 @@ def main():
             raise CleanError("The clean fixture must be in an isolated temporary directory.")
         pluginkit = bin_dir / "pluginkit"
         inspector = bin_dir / "artifact-inspector"
-        lifecycle = root.parent / "fixture-lifecycle"
         arguments = arguments[3:]
 
     operation = arguments[0] if arguments else "clean"
-    valid = {"clean": 0, "--lock": 2, "--preserve": 2, "--restore": 3, "--prune": 3}
+    valid = {"clean": 0, "--lock": 2, "--check-inactive": 2, "--restore": 3, "--prune": 3}
     if operation not in valid or len(arguments) != valid[operation]:
         raise CleanError("Invalid development cleanup arguments.")
     if arguments and not arguments[1].isdigit():
@@ -389,17 +356,14 @@ def main():
         with ExitStack() as stack:
             repository_fd = context.open_root(stack, lock_fd=fd)
             if operation == "clean":
-                result, preserved = clean(context, stack, repository_fd, pluginkit, inspector, lifecycle, recovery)
+                result = clean(context, stack, repository_fd, pluginkit, recovery)
                 print(f"development_clean={result}")
                 print(f"development_build_slot={slot}")
-                if preserved:
-                    print("development_recovery_source=retained")
-            elif operation == "--preserve":
+            elif operation == "--check-inactive":
                 build_fd = context.open_directories(stack, repository_fd, ("DerivedData", slot))
                 if build_fd is not None:
                     observe_lsof(context.path)
                     context.revalidate_anchors()
-                    preserve_if_needed(context, stack, repository_fd, build_fd, inspector, lifecycle, recovery)
             elif operation == "--restore":
                 if recovery["restore"](context, stack, repository_fd, inspector, arguments[2], SOURCE_HOST):
                     print("development_recovery_source=restored")

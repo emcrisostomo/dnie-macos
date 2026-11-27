@@ -95,6 +95,16 @@ cleanup_tool="${script_dir}/clean-development.py"
 fixture_helper() {
   /usr/bin/python3 -B "${cleanup_tool}" --fixture "${fixture_repository}" "${fixture_bin}" "$@"
 }
+run_locked() {
+  local descriptor
+  exec {descriptor}<"${fixture_repository}"
+  local operation="$1"
+  shift
+  local result=0
+  fixture_helper "${operation}" "${descriptor}" "$@" || result=$?
+  exec {descriptor}<&-
+  return "${result}"
+}
 fixture_helper --lock "${fixture_lock}"
 refuses 'already running' clean_fixture
 [[ -f "${slot}/preserve" ]]
@@ -135,6 +145,7 @@ for _ in {1..100}; do
 done
 [[ -f "${fixture_root}/file-open" ]]
 refuses 'process is using' clean_fixture
+refuses 'process is using' run_locked --check-inactive
 kill "${hold_pid}"
 wait "${hold_pid}" 2>/dev/null || true
 hold_pid=""
@@ -196,20 +207,19 @@ expected="${expected#artifact_cdhash=}"
 cache="${fixture_repository}/Validation/private/DevelopmentRecovery"
 archived="${cache}/${expected}/DNIeTokenHost.app"
 
-clean_fixture | /usr/bin/grep -q '^development_recovery_source=retained$'
+template="${fixture_root}/signed-template.app"
+/usr/bin/ditto "${app}" "${template}"
+clean_fixture | /usr/bin/grep -q '^development_clean=removed$'
+[[ ! -e "${slot}" && ! -e "${cache}" ]]
+# Seed an existing legacy cache entry without using the retired copy command.
+mkdir -p "${cache:h}"
+mkdir -m 700 "${cache}" "${cache}/${expected}"
+/usr/bin/ditto "${template}" "${archived}"
 [[ ! -e "${slot}" && -f "${archived}/Contents/Resources/payload" ]]
 [[ "$(/usr/bin/stat -f %Lp "${cache}")" == 700 && "$(/usr/bin/stat -f %Lp "${cache}/${expected}")" == 700 ]]
 [[ "$("${fixture_bin}/artifact-inspector" "${archived}")" == "artifact_cdhash=${expected}" ]]
 /usr/bin/grep -qx 'local fixture bytes' "${archived}/Contents/Resources/payload"
 
-run_locked() {
-  local descriptor
-  exec {descriptor}<"${fixture_repository}"
-  local result=0
-  fixture_helper "$1" "${descriptor}" "$2" || result=$?
-  exec {descriptor}<&-
-  return "${result}"
-}
 wrong=0000000000000000000000000000000000000000
 refuses 'No complete exact signed app' run_locked --restore "${wrong}"
 run_locked --restore "${expected}" | /usr/bin/grep -q '^development_recovery_source=restored$'
@@ -217,10 +227,10 @@ run_locked --restore "${expected}" | /usr/bin/grep -q '^development_recovery_sou
 refuses 'already occupies' run_locked --restore "${expected}"
 [[ "$("${fixture_bin}/artifact-inspector" "${app}")" == "artifact_cdhash=${expected}" ]]
 
-# Refuse deletion if an existing expected archive is a collision.
+# Refuse pruning if an existing expected archive is a collision.
 mv "${cache}/${expected}" "${cache}/saved-archive"
 mkdir -m 700 "${cache}/${expected}"
-refuses 'contains unrelated data' clean_fixture
+refuses 'contains unrelated data' run_locked --prune "${expected}"
 [[ -f "${app}/Contents/Resources/payload" ]]
 rmdir "${cache}/${expected}"
 mv "${cache}/saved-archive" "${cache}/${expected}"
@@ -262,27 +272,6 @@ env DNIE_WORKFLOW_TEST_MODE=1 DNIE_WORKFLOW_REPOSITORY_ROOT="${fixture_repositor
    -f "${fixture_root}/fixture-registration" ]]
 [[ "$("${fixture_bin}/artifact-inspector" "${app}")" == "artifact_cdhash=${expected}" ]]
 print -rl -- '#!/bin/zsh' 'exit 0' > "${fixture_bin}/pluginkit"
-
-# The production signature inspector must be bypassed for output missing a
-# required executable. The test app has a host executable but no extension.
-/usr/bin/python3 -B - "${cleanup_tool}" "${fixture_repository}" <<'PYTHON'
-from contextlib import ExitStack
-from pathlib import Path
-import runpy
-import sys
-
-support = runpy.run_path(sys.argv[1])
-recovery = runpy.run_path(str(Path(sys.argv[1]).with_name("development-recovery.py")))
-root = Path(sys.argv[2])
-with ExitStack() as stack:
-    slot = support["BuildSlot"](root, "T067", lambda fd: None, lambda fd: None)
-    root_fd = slot.open_root(stack)
-    source = ("DerivedData", "T067", *support["SOURCE_HOST"])
-    app_fd = slot.open_directories(stack, root_fd, source)
-    assert recovery["preserve"](
-        slot, stack, app_fd, root.joinpath(*source), root_fd, Path("inspect-pilot-artifact.sh"),
-    ) is False
-PYTHON
 
 # A deliberately interrupted wrapper must leave the actual writing process
 # holding the lock. Only the exact test-owned wrapper PID is killed.

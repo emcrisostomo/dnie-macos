@@ -797,12 +797,17 @@ acquire_lock() {
   [[ -d "${state_parent}" && ! -L "${state_parent}" ]] || fail "The lifecycle state parent is unsafe."
   if [[ ! -e "${state_root}" ]]; then /bin/mkdir "${state_root}"; fi
   [[ -d "${state_root}" && ! -L "${state_root}" ]] || fail "The lifecycle state root is unsafe."
-  if [[ ! -e "${transactions}" ]]; then /bin/mkdir "${transactions}"; fi
-  /bin/chmod 700 "${state_root}" "${transactions}"
-  [[ "$(/usr/bin/stat -f %u "${state_parent}")" == "${EUID}" && "$(/usr/bin/stat -f %u "${state_root}")" == "${EUID}" &&
-     "$(/usr/bin/stat -f %u "${transactions}")" == "${EUID}" && "$(/usr/bin/stat -f %Lp "${state_root}")" == 700 &&
-     "$(/usr/bin/stat -f %Lp "${transactions}")" == 700 ]] || fail "Lifecycle state ownership or modes are unsafe."
+  if [[ "${2:-}" == direct ]]; then
+    require_direct_state_scope
+  else
+    if [[ ! -e "${transactions}" ]]; then /bin/mkdir "${transactions}"; fi
+    /bin/chmod 700 "${state_root}" "${transactions}"
+    [[ "$(/usr/bin/stat -f %u "${state_parent}")" == "${EUID}" && "$(/usr/bin/stat -f %u "${state_root}")" == "${EUID}" &&
+       "$(/usr/bin/stat -f %u "${transactions}")" == "${EUID}" && "$(/usr/bin/stat -f %Lp "${state_root}")" == 700 &&
+       "$(/usr/bin/stat -f %Lp "${transactions}")" == 700 ]] || fail "Lifecycle state ownership or modes are unsafe."
+  fi
   /bin/mkdir "${lock}" 2>/dev/null || fail "Another lifecycle transaction or retained recovery lock exists. Use only the bounded recovery command after inspection."
+  [[ "${2:-}" != direct ]] || lock_held=1
   owner_start="$(process_start_identity $$)"
   [[ -n "${owner_start}" ]] || fail "Unable to record lifecycle lock owner identity."
   { print -r -- "operation=$1"; print -r -- "token=${token}"; print -r -- "pid=$$"; print -r -- "process_start=${owner_start}"; } > "${lock}/owner"
@@ -987,6 +992,169 @@ normalize_published_app() {
   done
   [[ "$(inspect_cdhash "${app}")" == "${expected}" ]] ||
     fail "Permission normalization changed or invalidated the strict signed artifact boundary."
+}
+direct_token() { [[ "$1" =~ '^direct-[0-9A-Za-z._-]{8,89}$' ]]; }
+require_direct_state_scope() {
+  local directory
+  for directory in "${state_root:h}" "${state_root}"; do
+    [[ -d "${directory}" && ! -L "${directory}" && "${directory:A}" == "${directory}" &&
+       "$(/usr/bin/stat -f %u "${directory}")" == "${EUID}" &&
+       "$(/usr/bin/stat -f %Lp "${directory}")" == 700 ]] || fail "The direct pilot ownership directory is unsafe."
+  done
+}
+require_direct_transaction_free() {
+  local owner="$1"
+  direct_token "${owner}" || fail "Ownership belongs to a historical or unknown operation."
+  if [[ -e "${transactions}" || -L "${transactions}" ]]; then
+    [[ -d "${transactions}" && ! -L "${transactions}" &&
+       "$(/usr/bin/stat -f %u "${transactions}")" == "${EUID}" &&
+       "$(/usr/bin/stat -f %Lp "${transactions}")" == 700 &&
+       ! -e "${transactions}/${owner}" && ! -L "${transactions}/${owner}" ]] ||
+      fail "The direct ownership token collides with historical lifecycle state."
+  fi
+}
+require_direct_ownership_state() {
+  local phase="$1" cdhash="$2" owner="$3"
+  require_direct_transaction_free "${owner}"
+  require_exact_field_order "${state_file}" host_id extension_id cdhash phase token ||
+    fail "The direct ownership state does not have the exact five-field shape."
+  [[ "${cdhash}" =~ '^[[:xdigit:]]{40}$' ]] || fail "The direct ownership identity is malformed."
+  require_owned_state "${phase}" "${cdhash}" "${owner}"
+}
+require_direct_installed_app() {
+  local cdhash="$1" observed_identity="${2:-}" ownership_phase before
+  [[ -d "${destination}" && ! -L "${destination}" && "${destination:A}" == "${destination}" &&
+     "$(/usr/bin/stat -f %u "${destination}")" == "${EUID}" &&
+     "$(/usr/bin/stat -f %Lp "${destination}")" == 755 ]] || fail "The exact installed app is absent or unsafe."
+  [[ -f "${state_file}" && ! -L "${state_file}" ]] || fail "No exact ownership binding exists for the installed app."
+  ownership_phase="$(state_value phase "${state_file}")"
+  case "${ownership_phase}" in
+    committed)
+      require_strict_committed_state
+      require_owned_state committed "${cdhash}"
+      ;;
+    pending-install)
+      require_direct_ownership_state pending-install "${cdhash}" "$(state_value token "${state_file}")"
+      ;;
+    *) fail "The installed app has unknown or historical pending ownership." ;;
+  esac
+  before="$(/usr/bin/stat -f '%d:%i' "${destination}")"
+  [[ -z "${observed_identity}" || "${before}" == "${observed_identity}" ]] ||
+    fail "The installed app identity changed since it was observed."
+  [[ "$(inspect_cdhash "${destination}")" == "${cdhash}" &&
+     "$(/usr/bin/stat -f '%d:%i' "${destination}")" == "${before}" ]] ||
+    fail "The installed app differs from the exact signed ownership binding."
+}
+require_direct_python() {
+  local directory mode list
+  direct_python="/Library/Developer/CommandLineTools/usr/bin/python3"
+  direct_python="${direct_python:A}"
+  [[ "${direct_python}" == /Library/Developer/CommandLineTools/* && -f "${direct_python}" && -x "${direct_python}" &&
+     "$(/usr/bin/stat -f '%u:%Lp' "${direct_python}")" == 0:755 ]] ||
+    fail "The fixed Apple Command Line Tools Python is required for the atomic app move."
+  list="$(/bin/ls -lde "${direct_python}")"
+  [[ "${list}" != *$'\n'* ]] || fail "The fixed Apple Command Line Tools Python has an unexpected ACL."
+  directory="${direct_python:h}"
+  while [[ "${directory}" == /Library || "${directory}" == /Library/* ]]; do
+    [[ -d "${directory}" && ! -L "${directory}" && "$(/usr/bin/stat -f %u "${directory}")" == 0 ]] ||
+      fail "The fixed Apple Command Line Tools Python ancestry is unsafe."
+    mode="$(/usr/bin/stat -f %Lp "${directory}")"
+    list="$(/bin/ls -lde "${directory}")"
+    [[ "${mode}" == <-> && "${list}" != *$'\n'* ]] && (( (8#${mode} & 8#022) == 0 )) ||
+      fail "The fixed Apple Command Line Tools Python ancestry has unsafe write permissions."
+    directory="${directory:h}"
+  done
+}
+move_direct_app_exclusive() {
+  # Callers use only the fixed pilot destination and generated private app paths.
+  "${direct_python}" -I -B - "$1" "$2" <<'PYTHON'
+import ctypes
+import os
+import sys
+
+source, destination = map(os.fsencode, sys.argv[1:])
+source_parent, source_name = os.path.split(source)
+destination_parent, destination_name = os.path.split(destination)
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+try:
+    source_fd = os.open(source_parent, flags)
+    destination_fd = os.open(destination_parent, flags)
+    rename = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True).renameatx_np
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    # Darwin RENAME_EXCL refuses any pre-existing destination entry.
+    if rename(source_fd, source_name, destination_fd, destination_name, 0x4) != 0:
+        raise OSError(ctypes.get_errno(), "exclusive rename failed")
+except OSError as error:
+    sys.exit(f"Atomic pilot app move failed: {error}")
+PYTHON
+}
+require_no_direct_custody() {
+  local -a retained
+  retained=("${state_root}"/remove.*(N))
+  (( ${#retained} == 0 )) ||
+    fail "A prior removal left an unresolved private directory at ${retained[1]}."
+}
+require_direct_app_inactive() {
+  local pattern
+  if [[ "${test_mode}" == 1 ]]; then
+    [[ ! -e "${test_root}/pgrep.fail" ]] ||
+      fail "Unable to establish that the exact installed host and provider are inactive."
+    [[ ! -e "${test_root}/host.active" && ! -e "${test_root}/provider.active" ]] ||
+      fail "The exact installed host or provider is active."
+    return
+  fi
+  for pattern in \
+    '^/Applications/DNIeTokenHost\.app/Contents/MacOS/DNIeTokenHost([[:space:]]|$)' \
+    '^/Applications/DNIeTokenHost\.app/Contents/PlugIns/DNIeTokenExtension\.appex/Contents/MacOS/DNIeTokenExtension([[:space:]]|$)'; do
+    if /usr/bin/pgrep -f "${pattern}" >/dev/null 2>&1; then
+      fail "The exact installed host or provider is active."
+    elif (( $? != 1 )); then
+      fail "Unable to establish that the exact installed host and provider are inactive."
+    fi
+  done
+}
+remove_direct_app() {
+  local expected="$1" observed_identity="$2" custody_app
+  require_direct_python
+  direct_custody="$(/usr/bin/mktemp -d "${state_root}/remove.XXXXXXXX")"
+  custody_app="${direct_custody}/DNIeTokenHost.app"
+  [[ ! -L "${destination}" && "$(/usr/bin/stat -f '%d:%i' "${destination}")" == "${observed_identity}" ]] ||
+    fail "The exact installed app changed before removal."
+  require_direct_app_inactive
+  move_direct_app_exclusive "${destination}" "${custody_app}" ||
+    fail "The app could not be moved into private removal custody."
+  test_fail remove-pilot-after-move
+  if [[ ! -d "${custody_app}" || -L "${custody_app}" ||
+        "$(/usr/bin/stat -f '%d:%i' "${custody_app}")" != "${observed_identity}" ]] ||
+     ! ( require_normalizable_app_topology "${custody_app}" ) ||
+     [[ "$(inspect_cdhash "${custody_app}")" != "${expected}" ||
+        "$(/usr/bin/stat -f '%d:%i' "${custody_app}")" != "${observed_identity}" ]]; then
+    if move_direct_app_exclusive "${custody_app}" "${destination}"; then
+      fail "The moved app differed from the exact ownership proof and was returned without deleting it."
+    fi
+    fail "The moved app differed from the exact ownership proof and could not be returned safely."
+  fi
+  /bin/rm -rfx -- "${custody_app}" ||
+    fail "App removal failed. The ownership binding remains. Inspect make status before retrying."
+  cleanup_direct_custody
+}
+cleanup_direct_custody() {
+  [[ -n "${direct_custody}" ]] || return 0
+  if ! /bin/rmdir -- "${direct_custody}" 2>/dev/null; then
+    print -u2 -- "The private removal directory was left at ${direct_custody}."
+    direct_custody=""
+    return 1
+  fi
+  direct_custody=""
+}
+cleanup_direct_staging() {
+  [[ -n "${direct_stage}" ]] || return 0
+  [[ -d "${direct_stage}" && ! -L "${direct_stage}" &&
+     "$(/usr/bin/stat -f '%u:%Lp:%i' "${direct_stage}")" == "${EUID}:700:${direct_stage_inode}" ]] ||
+    fail "The generated pilot staging directory changed and was left at ${direct_stage}."
+  /bin/rm -rf -- "${direct_stage}" || fail "Unable to remove generated pilot staging at ${direct_stage}."
+  direct_stage=""
 }
 claim_and_restore_app() {
   local archive="$1" expected="$2"
@@ -1209,6 +1377,9 @@ transaction="${transactions}/${token}"
 lock_held=0
 lock_retained=0
 publication_inode=""
+direct_stage=""
+direct_stage_inode=""
+direct_custody=""
 upgrade_probe_tmp=""
 upgrade_probe_tmp_owned=0
 upgrade_temp_suffix="${DNIE_LIFECYCLE_TEST_TEMP_SUFFIX:-$$}"
@@ -1220,12 +1391,99 @@ rollback_predecessor_topology=""
 rollback_predecessor_operation=""
 rollback_metadata_inode=""
 [[ "${upgrade_temp_suffix}" == <-> ]] || fail "The fixture temporary suffix is invalid." 64
-trap 'exit_status=$?; (( upgrade_probe_tmp_owned == 0 )) || /bin/rm -f -- "${upgrade_probe_tmp}" 2>/dev/null || true; if (( exit_status != 0 )) && [[ -n "${publication_inode}" && -d "${destination}" && ! -L "${destination}" && "$(/usr/bin/stat -f %i "${destination}" 2>/dev/null)" == "${publication_inode}" ]]; then /bin/mv "${destination}" "${transaction}/DNIeTokenHost.app.failed-install" 2>/dev/null || true; print "phase=failed-install-retained" > "${transaction}/transaction.state" 2>/dev/null || true; fi; if (( lock_held && ! lock_retained )); then release_lock || true; fi; exit ${exit_status}' EXIT
+trap 'exit_status=$?; [[ -z "${direct_stage}" ]] || ( cleanup_direct_staging ) || exit_status=1; cleanup_direct_custody || exit_status=1; (( upgrade_probe_tmp_owned == 0 )) || /bin/rm -f -- "${upgrade_probe_tmp}" 2>/dev/null || true; if (( exit_status != 0 )) && [[ -n "${publication_inode}" && -d "${destination}" && ! -L "${destination}" && "$(/usr/bin/stat -f %i "${destination}" 2>/dev/null)" == "${publication_inode}" ]]; then /bin/mv "${destination}" "${transaction}/DNIeTokenHost.app.failed-install" 2>/dev/null || true; print "phase=failed-install-retained" > "${transaction}/transaction.state" 2>/dev/null || true; fi; if (( lock_held && ! lock_retained )); then release_lock || true; fi; exit ${exit_status}' EXIT
 trap 'exit 130' INT TERM HUP
 
 case "${command_name}" in
   authorize)
     print 'pilot_authorization=pass'
+    ;;
+  publish-pilot)
+    [[ $# == 4 ]] && direct_token "${token}" || fail "Publication requires a direct token, source app, and artifact identity." 64
+    source_app="$3"; expected="${4:l}"
+    require_direct_python
+    [[ "${expected}" =~ '^[[:xdigit:]]{40}$' ]] || fail "The expected artifact identity is invalid." 64
+    [[ "${source_app}" == /*/DNIeTokenHost.app && "${source_app:A}" == "${source_app}" &&
+       "${source_app}" != "${destination}" ]] || fail "The source path is outside the authorized canonical scope."
+    if [[ "${test_mode}" == 1 ]]; then
+      require_fixture_ancestors "${source_app}" || fail "The source app escaped the canonical fixture scope."
+    fi
+    acquire_lock publish-pilot direct
+    require_no_direct_custody
+    [[ ! -e "${destination}" && ! -L "${destination}" && ! -e "${state_file}" && ! -L "${state_file}" ]] ||
+      fail "Publication requires an absent destination and ownership state. Inspect make status or make uninstall."
+    require_direct_transaction_free "${token}"
+    [[ "$(/usr/bin/stat -f %d "${state_root}")" == "$(/usr/bin/stat -f %d "${destination:h}")" ]] ||
+      fail "The private staging and installation directories are on different devices."
+    require_normalizable_app_topology "${source_app}"
+    [[ "$(inspect_cdhash "${source_app}")" == "${expected}" ]] || fail "The source artifact identity changed before staging."
+    direct_stage="$(/usr/bin/mktemp -d "${state_root}/publish.XXXXXXXX")"
+    direct_stage_inode="$(/usr/bin/stat -f %i "${direct_stage}")"
+    staging="${direct_stage}/DNIeTokenHost.app"
+    /usr/bin/ditto -X --noacl --nopersistRootless "${source_app}" "${staging}" || fail "The source app could not be staged."
+    normalize_published_app "${staging}" "${expected}"
+    staged_verification="$("${inspector}" "${staging}")" || fail "The staged app failed the strict product verification."
+    [[ "${staged_verification}" == *$'\n'"artifact_cdhash=${expected}"$'\n'* &&
+       "$(inspect_cdhash "${source_app}")" == "${expected}" ]] || fail "The source or staged artifact changed before publication."
+    stage_app_identity="$(/usr/bin/stat -f '%d:%i' "${staging}")"
+    write_state pending-install "${expected}" "${token}"
+    test_fail publish-pilot-after-binding
+    move_direct_app_exclusive "${staging}" "${destination}" ||
+      fail "Publication did not complete. A pending ownership binding remains. Inspect make status before retrying."
+    test_fail publish-pilot-after-rename
+    require_direct_installed_app "${expected}" "${stage_app_identity}"
+    cleanup_direct_staging
+    release_lock
+    print 'pilot_publication=pending-install'
+    ;;
+  confirm-pilot)
+    [[ $# == 3 && "${3:-}" =~ '^[[:xdigit:]]{40}$' ]] || fail "Confirmation requires one exact artifact identity." 64
+    expected="${3:l}"
+    acquire_lock confirm-pilot direct
+    require_direct_ownership_state pending-install "${expected}" "${token}"
+    require_direct_installed_app "${expected}"
+    write_state committed "${expected}" "${token}"
+    release_lock
+    print 'pilot_installation=committed'
+    ;;
+  probe-pilot-removal)
+    [[ $# == 4 && "${3:-}" =~ '^[[:xdigit:]]{40}$' && "${4:-}" =~ '^[0-9]+:[0-9]+$' ]] ||
+      fail "Removal proof requires the exact artifact identity and observed device:inode." 64
+    require_direct_state_scope
+    [[ ! -e "${lock}" && ! -L "${lock}" ]] || fail "The lifecycle lock exists. Removal ownership cannot be observed safely."
+    require_no_direct_custody
+    require_direct_installed_app "${3:l}" "$4"
+    [[ ! -e "${lock}" && ! -L "${lock}" ]] || fail "A lifecycle operation started during removal ownership inspection."
+    print 'pilot_removal_probe=pass'
+    ;;
+  remove-pilot)
+    [[ ( $# == 3 && "${3:-}" == absent ) ||
+       ( $# == 4 && "${3:-}" =~ '^[[:xdigit:]]{40}$' && "${4:-}" =~ '^[0-9]+:[0-9]+$' ) ]] ||
+      fail "Removal requires the exact artifact identity and observed device:inode, or the absent classification." 64
+    acquire_lock remove-pilot direct
+    require_no_direct_custody
+    if [[ "$3" == absent ]]; then
+      [[ ! -e "${destination}" && ! -L "${destination}" ]] || fail "The destination exists; absent removal was refused."
+      if [[ -e "${state_file}" || -L "${state_file}" ]]; then
+        [[ -f "${state_file}" && ! -L "${state_file}" ]] || fail "The absent app has an unsafe ownership binding."
+        ownership_phase="$(state_value phase "${state_file}")"
+        [[ "${ownership_phase}" == pending-install || "${ownership_phase}" == committed ]] ||
+          fail "The absent app has unknown or historical pending ownership."
+        require_direct_ownership_state "${ownership_phase}" "$(state_value cdhash "${state_file}")" "$(state_value token "${state_file}")"
+      fi
+    else
+      observed_identity="$4"
+      require_normalizable_app_topology "${destination}"
+      require_direct_installed_app "${3:l}" "${observed_identity}"
+      [[ "$(/usr/bin/stat -f %d "${destination:h}")" == "${observed_identity%%:*}" ]] ||
+        fail "The installed app is on a different device from its parent."
+      remove_direct_app "${3:l}" "${observed_identity}"
+    fi
+    [[ ! -e "${destination}" && ! -L "${destination}" ]] ||
+      fail "The destination is still present. The ownership binding remains."
+    /bin/rm -f -- "${state_file}" || fail "The app is absent but its ownership binding could not be removed."
+    release_lock
+    print 'pilot_installation=absent'
     ;;
   prepare-upgrade-fixture)
     candidate="${3:-}"
@@ -1477,7 +1735,12 @@ case "${command_name}" in
     ;;
   register-securityagent)
     expected="${3:-}"; [[ "${expected}" =~ '^[[:xdigit:]]{40}$' ]] || fail "The expected artifact identity is invalid." 64
-    acquire_lock register-securityagent
+    if direct_token "${token}" && [[ ! -e "${transaction}" && ! -L "${transaction}" ]]; then
+      acquire_lock register-securityagent direct
+      require_direct_ownership_state pending-install "${expected:l}" "${token}"
+    else
+      acquire_lock register-securityagent
+    fi
     require_owned_state pending-install "${expected:l}" "${token}"
     [[ "$(inspect_cdhash "${destination}")" == "${expected:l}" ]] || fail "The pending installed artifact changed before _securityagent registration."
     host_executable="${destination}/Contents/MacOS/DNIeTokenHost"
@@ -1681,5 +1944,5 @@ case "${command_name}" in
     release_lock
     print 'pilot_installation=absent'
     ;;
-  *) fail "usage: ${0:t} {authorize|prepare-upgrade-fixture|probe-upgrade-fixture|stage-upgrade-fixture|probe-staged-upgrade-fixture|retain-old-upgrade-fixture|probe-old-retained-upgrade-fixture|arm-upgrade-rollback-fixture|probe-armed-upgrade-rollback-fixture|register-securityagent|install|commit-install|rollback-install|rollback-pending-install|probe-rollback-install|probe-pending-install|uninstall|commit-uninstall|rollback-uninstall|probe-rollback-uninstall|recover-interrupted} TOKEN [SOURCE] CDHASH" 64 ;;
+  *) fail "usage: ${0:t} {authorize|publish-pilot|confirm-pilot|probe-pilot-removal|remove-pilot|prepare-upgrade-fixture|probe-upgrade-fixture|stage-upgrade-fixture|probe-staged-upgrade-fixture|retain-old-upgrade-fixture|probe-old-retained-upgrade-fixture|arm-upgrade-rollback-fixture|probe-armed-upgrade-rollback-fixture|register-securityagent|install|commit-install|rollback-install|rollback-pending-install|probe-pending-install|uninstall|commit-uninstall|rollback-uninstall|probe-rollback-uninstall|recover-interrupted} TOKEN [SOURCE] [CDHASH|absent] [DEVICE:INODE]" 64 ;;
 esac

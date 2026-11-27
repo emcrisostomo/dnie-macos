@@ -37,6 +37,8 @@ Signed installer distribution and installation on a clean Mac are still being va
 - Full Xcode with a macOS 26 or later SDK and Swift 6.2 or later. Select it as the active
   command-line developer directory.
 - Python 3.9 or later, `jq`, and the macOS-provided Make.
+- Apple's standalone Command Line Tools for the fixed Python interpreter used during
+  privileged app moves.
 - An Apple Development signing identity in your Keychain. See Apple’s
   [signing identity setup instructions](https://developer.apple.com/documentation/xcode/sharing-your-teams-signing-certificates); in Xcode’s
   certificate manager, choose **Apple Development**.
@@ -89,11 +91,21 @@ Installation may request macOS administrator authorization. Insert your DNIe and
 its Authentication identity when a compatible app requests a certificate. Enter your PIN
 only in the native system prompt. See [security guidance](SECURITY.md) before testing a card.
 
-To uninstall the development build installed by this workflow:
+After a successful install, `make status` should report `installed_artifact=verified`,
+`installed_app=present`, and `provider_registration=exact-installed`.
 
-```sh
-make uninstall
-```
+### Recover from a failed install
+
+1. After the failed command exits, run `make status`. If the verified app is present and
+   registration is `absent` or `exact-installed`, run `make uninstall` and check status again.
+2. Once the app and registration are both absent, run `make install` using the same
+   inspected build. Check for the expected status after it succeeds.
+3. If uninstall refuses, or status reports an unverified app or unexpected or unavailable
+   registration, stop and retain the output for diagnosis. While a command is running,
+   resolve its administrator prompt or wait for it to exit before starting another command.
+
+Use `make uninstall` for ordinary removal as well. Run Make as your normal user and enter
+any administrator password only in the macOS dialog or terminal prompt.
 
 ## Clean build output
 
@@ -101,11 +113,9 @@ make uninstall
 make clean
 ```
 
-Removes the development build output without uninstalling the app or removing
-prepared terminal data. No administrator password is needed. Any exact signed
-app needed for interrupted-install recovery is retained privately outside the
-build directory. See the [release guide](Release/README.md#development-build-cleanup)
-for recovery and alternate build slots.
+Removes the selected development build output. It leaves the installed app and
+prepared terminal data in place and requires no administrator password. See the
+[release guide](Release/README.md#development-build-cleanup) for alternate build slots.
 
 ## Reader and card information
 

@@ -55,16 +55,17 @@ grep -q '^credential_fixture_inspected=false$' "${fixture_root}/check.out"
 grep -q '^signing_keychain_inspected=false$' "${fixture_root}/check.out"
 ! grep -q '0123456789ABCDEF' "${fixture_root}/check.out"
 env "${common_env[@]}" DNIE_WORKFLOW_DESTINATION_APP="${fixture_root}/absent.app" \
-  DNIE_WORKFLOW_INSPECT_SCRIPT="${stub_bin}/inspect-unused" \
   "${workflow}" status > "${fixture_root}/status.out"
-grep -q '^installed_provider_visibility=absent$' "${fixture_root}/status.out"
+grep -qx 'installed_app=absent' "${fixture_root}/status.out"
+grep -qx 'provider_registration=absent' "${fixture_root}/status.out"
 write_stub pluginkit 'print "+ org.dniemacos.dnietoken.tokenextension (0.1.0)"; print "    Path = /private/tmp/stale.appex"'
 if env "${common_env[@]}" DNIE_WORKFLOW_DESTINATION_APP="${fixture_root}/absent.app" \
   "${workflow}" status >"${fixture_root}/stale-status.out" 2>"${fixture_root}/stale-status.err"; then
   print -u2 "stale_registration_status_accepted=true"
   exit 2
 fi
-grep -q 'matching registration remains visible' "${fixture_root}/stale-status.err"
+grep -qx 'installed_app=absent' "${fixture_root}/stale-status.out"
+grep -qx 'provider_registration=unexpected' "${fixture_root}/stale-status.out"
 write_stub pluginkit 'exit 0'
 
 write_stub build-stub '
@@ -208,7 +209,8 @@ grep -q "^$(/usr/bin/id -u)$" "${fixture_root}/sudo.command"
 # A foreground lifecycle uses the same terminal transport even when a phase
 # discards stdout or captures a proof. A detached invocation uses native GUI.
 fixture_cdhash=0123456789abcdef0123456789abcdef01234567
-write_stub inspect-artifact '[[ "$#" -eq 1 ]]; print "artifact_cdhash='"${fixture_cdhash}"'"'
+mkdir "${fixture_root}/source.app"
+write_stub inspect-artifact '[[ "$#" -eq 1 && -d "$1" ]]; print "artifact_cdhash='"${fixture_cdhash}"'"; print "extension_marketing_version=0.1.0"'
 write_stub pgrep 'exit 1'
 write_stub sleep 'exit 0'
 write_stub pluginkit '
@@ -223,7 +225,11 @@ shift 13
 phase="$1"
 print -r -- "sudo:${phase}" >> "'"${fixture_root}"'/transport-trace"
 case "${phase}" in
-  authorize|install|commit-install) ;;
+  publish-pilot)
+    mkdir "${DNIE_WORKFLOW_DESTINATION_APP}"
+    print pilot_publication=pending-install
+    ;;
+  confirm-pilot) print pilot_installation=committed ;;
   register-securityagent) /usr/bin/touch "'"${fixture_root}"'/registered" ;;
   probe-pending-install)
     print -rl -- pending_install_recoverable=true "pending_install_token=$2" "pending_install_cdhash=$3"
@@ -263,7 +269,7 @@ def run(args, expected_trace, *, detached=False):
     return result
 
 install = run(terminal + [workflow, "install"], [
-    "sudo:authorize", "sudo:install", "sudo:register-securityagent", "sudo:commit-install",
+    "sudo:publish-pilot", "sudo:register-securityagent", "sudo:confirm-pilot",
 ])
 if install.returncode or "pilot_install=pass" not in install.stdout:
     raise SystemExit(f"Terminal fixture install failed: {install.stdout}{install.stderr}")

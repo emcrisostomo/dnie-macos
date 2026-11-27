@@ -147,7 +147,7 @@ if [[ "${1:-}" == --check-signing ]]; then
 fi
 [[ "$#" -eq 0 ]] || exit 64
 
-/usr/bin/python3 -B "${cleanup_tool}" --preserve "${development_lock_fd}"
+/usr/bin/python3 -B "${cleanup_tool}" --check-inactive "${development_lock_fd}"
 "${repository_root}/Validation/Scripts/stage-production-credential-asset.sh"
 if ! git -C "${repository_root}" check-ignore --quiet "${credential_asset}"; then
   print -u2 "The development credential asset is not ignored; refusing the build."
